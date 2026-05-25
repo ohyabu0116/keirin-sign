@@ -214,14 +214,15 @@ async function dbDel(store,id){
   return _idbDel(store,id);
 }
 
-// ★ Railway デプロイ後ここを実URLに書き換える
-const RAILWAY_URL='https://keirin-sign-production.up.railway.app';
+// ★ Render デプロイ後ここを実URLに書き換える (デフォルト: keirin-sign.onrender.com)
+const CLOUD_URL='https://keirin-sign.onrender.com';
 
-async function _tryRailway(){
+async function _tryCloud(){
   try{
-    const r=await fetch(`${RAILWAY_URL}/api/ping`,{signal:AbortSignal.timeout(12000)});
+    // Render free plan は cold start で 30秒以上かかることあり
+    const r=await fetch(`${CLOUD_URL}/api/ping`,{signal:AbortSignal.timeout(45000)});
     const d=await r.json();
-    if(d.ok===true){_useServer=true;_serverBase=RAILWAY_URL;return true;}
+    if(d.ok===true){_useServer=true;_serverBase=CLOUD_URL;return true;}
   }catch(e){}
   return false;
 }
@@ -234,8 +235,8 @@ async function initStorage(){
     if(d.ok===true){_useServer=true;_serverBase='';return 'local';}
   }catch(e){}
 
-  // 2. Railway (GitHub Pages 経由でアクセス時)
-  if(await _tryRailway()) return 'cloud';
+  // 2. Render (GitHub Pages 経由でアクセス時)
+  if(await _tryCloud()) return 'cloud';
 
   // 3. IndexedDB フォールバック (外出モード)
   // 空の場合は keirinsign_export.json から自動シード
