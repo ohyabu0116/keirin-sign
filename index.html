@@ -292,6 +292,160 @@ function permutations(arr,r){
   return out;
 }
 
+/* ====================================================================
+   クライアントサイド マイニング (サーバーなしでも動作)
+==================================================================== */
+function mineClientSide(races, players, opts={}){
+  const minTrials=opts.minTrials||5;
+  const minRate=opts.minRate||90;
+  const validRaces=races.filter(r=>r.result1&&r.entries&&r.entries.length>0);
+  const playerMap={};
+  players.forEach(p=>{if(p.regNo)playerMap[String(p.regNo).padStart(6,'0')]=p;});
+
+  // 1. コース連動: 選手×場×車番の連動率
+  const histories={};
+  validRaces.forEach(r=>{
+    (r.entries||[]).forEach(e=>{
+      const rn=String(e.regNo||'').padStart(6,'0');
+      const sy=Number(e.syaban);
+      if(!rn||!sy)return;
+      const key=`${rn}|${r.venue}|${sy}`;
+      (histories[key]=histories[key]||[]).push(r);
+    });
+  });
+  Object.keys(histories).forEach(k=>{
+    histories[k].sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.raceNo-b.raceNo));
+  });
+  const courseLink=[];
+  Object.entries(histories).forEach(([key,hist])=>{
+    if(hist.length<minTrials+2)return;
+    const [rn,venue,syStr]=key.split('|');
+    const sy=Number(syStr);
+    for(let lb=2;lb<=5;lb++){
+      if(hist.length<minTrials+lb)continue;
+      let trials=0,hits2=0,hits3=0;
+      for(let i=lb;i<hist.length;i++){
+        const curr=hist[i], ref=hist[i-lb];
+        const refTop3=[ref.result1,ref.result2,ref.result3].filter(Boolean).map(Number);
+        const curTop3=[curr.result1,curr.result2,curr.result3].filter(Boolean).map(Number);
+        if(refTop3.length<3||curTop3.length<3)continue;
+        const refRegs=refTop3.map(bn=>{
+          const en=(ref.entries||[]).find(e=>Number(e.syaban)===bn);
+          return en?String(en.regNo||'').padStart(6,'0'):null;
+        }).filter(Boolean);
+        const curRegs=curTop3.map(bn=>{
+          const en=(curr.entries||[]).find(e=>Number(e.syaban)===bn);
+          return en?String(en.regNo||'').padStart(6,'0'):null;
+        }).filter(Boolean);
+        if(refRegs.length<3||curRegs.length<3)continue;
+        const matches=refRegs.filter(x=>curRegs.includes(x)).length;
+        trials++;
+        if(matches>=2)hits2++;
+        if(matches>=3)hits3++;
+      }
+      if(trials<minTrials)continue;
+      const rate2=Math.round(hits2/trials*100);
+      if(rate2>=minRate){
+        const p=playerMap[rn];
+        courseLink.push({
+          type:'COURSE_LINK',regNo:rn,playerName:p?p.name:'?',
+          venue,syaban:sy,lookback:lb,trials,hits2,hits3,
+          rate2,rate3:Math.round(hits3/trials*100),
+          desc:`${p?p.name:'?'} ${venue}${sy}番 ${lb}走前→2艇以上連動 ${rate2}% (${hits2}/${trials})`,
+        });
+      }
+    }
+  });
+  courseLink.sort((a,b)=>b.rate2-a.rate2||b.trials-a.trials);
+
+  // 2. 競輪場×車番の3着内率
+  const venueSyaban={};
+  validRaces.forEach(r=>{
+    const top3=new Set([r.result1,r.result2,r.result3].filter(Boolean).map(Number));
+    (r.entries||[]).forEach(e=>{
+      const sy=Number(e.syaban);
+      if(!sy)return;
+      const key=`${r.venue}|${sy}`;
+      const d=venueSyaban[key]=venueSyaban[key]||{trials:0,inTop3:0,wins:0};
+      d.trials++;
+      if(top3.has(sy))d.inTop3++;
+      if(Number(r.result1)===sy)d.wins++;
+    });
+  });
+  const venueSyabanOut=[];
+  Object.entries(venueSyaban).forEach(([k,d])=>{
+    if(d.trials<minTrials*3)return;
+    const rate3=Math.round(d.inTop3/d.trials*100);
+    const rateWin=Math.round(d.wins/d.trials*100);
+    if(rate3>=minRate||rateWin>=50){
+      const [venue,syStr]=k.split('|');
+      venueSyabanOut.push({type:'VENUE_SYABAN',venue,syaban:Number(syStr),
+        trials:d.trials,inTop3:d.inTop3,wins:d.wins,rate3,rateWin,
+        desc:`${venue} ${Number(syStr)}番 → 3着以内${rate3}% (${d.inTop3}/${d.trials}) / 1着${rateWin}%`});
+    }
+  });
+  venueSyabanOut.sort((a,b)=>b.rate3-a.rate3);
+
+  // 3. 車番×脚質の3着内率
+  const kyakuSyaban={};
+  validRaces.forEach(r=>{
+    const top3=new Set([r.result1,r.result2,r.result3].filter(Boolean).map(Number));
+    (r.entries||[]).forEach(e=>{
+      const sy=Number(e.syaban), ky=e.kyaku;
+      if(!sy||!ky)return;
+      const key=`${sy}|${ky}`;
+      const d=kyakuSyaban[key]=kyakuSyaban[key]||{trials:0,inTop3:0};
+      d.trials++;
+      if(top3.has(sy))d.inTop3++;
+    });
+  });
+  const kyakuSyabanOut=[];
+  Object.entries(kyakuSyaban).forEach(([k,d])=>{
+    if(d.trials<minTrials*3)return;
+    const rate=Math.round(d.inTop3/d.trials*100);
+    if(rate>=minRate||rate<=(100-minRate)){
+      const [syStr,ky]=k.split('|');
+      kyakuSyabanOut.push({type:'KYAKU_SYABAN',syaban:Number(syStr),kyaku:ky,
+        trials:d.trials,inTop3:d.inTop3,rate,
+        desc:`${Number(syStr)}番×脚質「${ky}」 → 3着以内 ${rate}% (${d.inTop3}/${d.trials})`});
+    }
+  });
+  kyakuSyabanOut.sort((a,b)=>b.rate-a.rate);
+
+  // 4. 脚質構成パターン
+  const patterns={};
+  validRaces.forEach(r=>{
+    const ents=r.entries||[];
+    if(!ents.length||!r.result1)return;
+    const nige=ents.filter(e=>e.kyaku==='逃').length;
+    const ryo=ents.filter(e=>e.kyaku==='両').length;
+    const oi=ents.filter(e=>e.kyaku==='追').length;
+    const n=ents.length;
+    const key=`逃${nige}/両${ryo}/追${oi}/${n}車`;
+    const winner=ents.find(e=>Number(e.syaban)===Number(r.result1));
+    if(!winner)return;
+    const wk=winner.kyaku;
+    const d=patterns[key]=patterns[key]||{trials:0,kyakuCount:{}};
+    d.trials++;
+    d.kyakuCount[wk]=(d.kyakuCount[wk]||0)+1;
+  });
+  const kyakuPattern=[];
+  Object.entries(patterns).forEach(([key,d])=>{
+    if(d.trials<minTrials)return;
+    Object.entries(d.kyakuCount).forEach(([wk,cnt])=>{
+      const rate=Math.round(cnt/d.trials*100);
+      if(rate>=minRate){
+        kyakuPattern.push({type:'KYAKU_PATTERN',pattern:key,winnerKyaku:wk,
+          rate,trials:d.trials,hits:cnt,
+          desc:`構成「${key}」のとき1着は「${wk}」 ${rate}% (${cnt}/${d.trials})`});
+      }
+    });
+  });
+  kyakuPattern.sort((a,b)=>b.rate-a.rate||b.trials-a.trials);
+
+  return {courseLink,venueSyaban:venueSyabanOut,kyakuSyaban:kyakuSyabanOut,kyakuPattern};
+}
+
 function classifyGrade(syumoku){
   if(!syumoku) return '';
   if(syumoku.includes('Ｓ級')||syumoku.includes('S級')) return 'S';
@@ -908,9 +1062,22 @@ function SignConditionsScreen({players,signConditions,discoveries,reload,raceRes
   const runDiscover=async()=>{
     setDiscRunning(true);
     try{
-      const r=await fetch(`${_serverBase}/api/discover?min_trials=5&min_rate=90`);
-      const d=await r.json();
-      setDiscResult(d);
+      // サーバーがあればAPI、なければクライアントサイドで実行
+      if(_useServer){
+        try{
+          const r=await fetch(`${_serverBase}/api/discover?min_trials=5&min_rate=90`);
+          const ct=r.headers.get('content-type')||'';
+          if(ct.includes('json')){
+            const d=await r.json();
+            setDiscResult(d);
+            return;
+          }
+        }catch(e){console.warn('Server mining failed, falling back to client:',e);}
+      }
+      // クライアントサイド実装 (蓄積データから計算)
+      await new Promise(res=>setTimeout(res,50));
+      const result=mineClientSide(raceResults,players,{minTrials:5,minRate:90});
+      setDiscResult({ok:true,...result});
     }catch(e){
       alert('マイニング失敗: '+e.message);
     }finally{setDiscRunning(false)}
