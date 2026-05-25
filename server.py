@@ -606,6 +606,51 @@ def mine_player_syaban_link(min_trials=3, min_rate=70):
     out.sort(key=lambda x: (-x['rate'], -x['trials']))
     return out
 
+def mine_player_syaban_pair_link(min_trials=3, min_rate=70):
+    """「ある選手が○番のとき、△番と□番が両方3着以内」という2車連動を集計
+    2車単/2車複の強力なサインになる"""
+    races = db_all('raceResults')
+    races = [r for r in races if r.get('result1') and r.get('entries')]
+    hist = {}
+    for r in races:
+        for e in r.get('entries') or []:
+            rn = str(e.get('regNo') or '').zfill(6)
+            sy = e.get('syaban')
+            if not rn or not sy: continue
+            hist.setdefault((rn, int(sy)), []).append(r)
+    out = []
+    players = {str(p.get('regNo')).zfill(6): p for p in db_all('players') if p.get('regNo')}
+    for (rn, sy), races_for in hist.items():
+        if len(races_for) < min_trials: continue
+        # 各レースで上位3着の車番セットを取得
+        top3_sets = []
+        for r in races_for:
+            t3 = set(int(r[k]) for k in ('result1','result2','result3') if r.get(k))
+            top3_sets.append(t3)
+        # 全ペア (n1<n2, n1!=sy, n2!=sy) について両方含まれる頻度
+        for n1 in range(1, 10):
+            if n1 == sy: continue
+            for n2 in range(n1+1, 10):
+                if n2 == sy: continue
+                cnt = sum(1 for t3 in top3_sets if n1 in t3 and n2 in t3)
+                if cnt == 0: continue
+                rate = round(cnt / len(races_for) * 100)
+                if rate >= min_rate:
+                    p = players.get(rn, {})
+                    out.append({
+                        'type': 'PLAYER_SYABAN_PAIR_LINK',
+                        'regNo': rn,
+                        'playerName': p.get('name', '?'),
+                        'syaban': sy,
+                        'linkedPair': [n1, n2],
+                        'trials': len(races_for),
+                        'hits': cnt,
+                        'rate': rate,
+                        'desc': f'{p.get("name","?")} が{sy}番のとき → {n1}・{n2}両方3着以内 {rate}% ({cnt}/{len(races_for)})',
+                    })
+    out.sort(key=lambda x: (-x['rate'], -x['trials']))
+    return out
+
 def mine_venue_syaban(min_trials=10, min_rate=90):
     """競輪場×車番 別の3着以内率 (90%以上=必ず絡む車番) を集計"""
     races = db_all('raceResults')
@@ -820,10 +865,12 @@ class Handler(SimpleHTTPRequestHandler):
                 venue  = mine_venue_syaban(min_trials=max(min_trials*3,10), min_rate=min_rate)
                 kysy   = mine_kyaku_syaban(min_trials=max(min_trials*3,10), min_rate=min_rate)
                 psy    = mine_player_syaban_link(min_trials=max(min_trials-2,3), min_rate=min_rate-10)
+                psypair= mine_player_syaban_pair_link(min_trials=max(min_trials-2,3), min_rate=min_rate-20)
                 return self._json(200, {'ok': True,
                     'courseLink': course, 'kyakuPattern': kyaku,
                     'venueSyaban': venue, 'kyakuSyaban': kysy,
-                    'playerSyabanLink': psy})
+                    'playerSyabanLink': psy,
+                    'playerSyabanPairLink': psypair})
             except Exception as e:
                 return self._json(500, {'ok': False, 'error': str(e)})
 
