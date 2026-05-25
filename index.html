@@ -705,9 +705,14 @@ function TodayScreen({players,raceResults,signConditions,discoveries=[],reload})
 
   useEffect(()=>{
     if(!date) return;
+    if(!_useServer){setAvailableVenues(null);return;}
     setVenuesLoading(true); setAvailableVenues(null);
     fetch(`${_serverBase}/api/racing_venues?date=${date}`)
-      .then(r=>r.json())
+      .then(r=>{
+        const ct=r.headers.get('content-type')||'';
+        if(!ct.includes('json'))throw new Error('not json');
+        return r.json();
+      })
       .then(d=>{
         if(d.ok&&d.venues&&d.venues.length>0){
           setAvailableVenues(d.venues);
@@ -731,11 +736,17 @@ function TodayScreen({players,raceResults,signConditions,discoveries=[],reload})
   };
 
   async function fetchRacelist(){
+    if(!_useServer){
+      setFetchMsg({ok:false,text:'✗ バックエンド未接続\n\nKEIRIN.JPからの自動取得にはサーバーが必要です。\n• ローカル: start_server.command を起動\n• クラウド: Render に render.yaml をデプロイ'});
+      return;
+    }
     setFetching(true); setFetchMsg(null);
     try{
       const url=`${_serverBase}/api/racelist?venue=${encodeURIComponent(venue)}&date=${date}&raceNo=${raceNo}`;
       const res=await fetch(url);
       if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ct=res.headers.get('content-type')||'';
+      if(!ct.includes('json'))throw new Error('サーバー応答が不正 (HTMLが返却)');
       const data=await res.json();
       if(!data.ok) throw new Error(data.error||'取得失敗');
       const n=data.racers.length;
@@ -1275,8 +1286,19 @@ function InputScreen({reload}){
 
   useEffect(()=>{
     const load=async()=>{
+      if(!_useServer){
+        // クライアントサイドで集計
+        const[races,players]=await Promise.all([dbAll('raceResults'),dbAll('players')]);
+        const withResult=races.filter(r=>r.result1).length;
+        const dates=Array.from(new Set(races.map(r=>r.date).filter(Boolean))).sort();
+        setStats({ok:true,total_races:races.length,with_result:withResult,
+          total_players:players.length,date_from:dates[0]||null,date_to:dates[dates.length-1]||null});
+        return;
+      }
       try{
         const r=await fetch(`${_serverBase}/api/stats`);
+        const ct=r.headers.get('content-type')||'';
+        if(!ct.includes('json'))return;
         const d=await r.json();
         if(d.ok) setStats(d);
       }catch(e){}
@@ -1284,25 +1306,32 @@ function InputScreen({reload}){
     load();
   },[job?.status]);
 
+  const noServer=!_useServer;
+
   const startBulk=async()=>{
+    if(noServer)return alert('バックエンド未接続。\nKEIRIN.JPからの取得にはサーバーが必要です。\n\nstart_server.command を起動するか、Renderにデプロイしてください。');
     try{
       const r=await fetch(`${_serverBase}/api/bulk_fetch`,{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({date_from:fromDate,date_to:toDate,venues:selectedVenues.length>0?selectedVenues:null})
       });
+      const ct=r.headers.get('content-type')||'';
+      if(!ct.includes('json'))return alert('サーバー応答が不正');
       const d=await r.json();
       if(!d.ok) return alert('開始失敗: '+(d.error||''));
-      const jid=d.jobId;
-      pollJob(jid);
+      pollJob(d.jobId);
     }catch(e){alert('エラー: '+e.message);}
   };
 
   const startToday=async()=>{
+    if(noServer)return alert('バックエンド未接続。サーバーを起動してください。');
     try{
       const r=await fetch(`${_serverBase}/api/today_fetch`,{
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({date:today})
       });
+      const ct=r.headers.get('content-type')||'';
+      if(!ct.includes('json'))return alert('サーバー応答が不正');
       const d=await r.json();
       if(!d.ok) return alert('開始失敗');
       pollJob(d.jobId);
@@ -1490,12 +1519,46 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
 function SettingsScreen({connected,reload}){
   const[stats,setStats]=useState(null);
   useEffect(()=>{
-    fetch(`${_serverBase}/api/stats`).then(r=>r.json()).then(d=>{if(d.ok)setStats(d);}).catch(()=>{});
+    const load=async()=>{
+      if(_useServer){
+        try{
+          const r=await fetch(`${_serverBase}/api/stats`);
+          const ct=r.headers.get('content-type')||'';
+          if(ct.includes('json')){const d=await r.json();if(d.ok)setStats(d);}
+        }catch(e){}
+      }else{
+        const[races,players]=await Promise.all([dbAll('raceResults'),dbAll('players')]);
+        const withResult=races.filter(r=>r.result1).length;
+        const dates=Array.from(new Set(races.map(r=>r.date).filter(Boolean))).sort();
+        setStats({total_races:races.length,with_result:withResult,
+          total_players:players.length,date_from:dates[0]||null,date_to:dates[dates.length-1]||null});
+      }
+    };
+    load();
   },[]);
 
   const autoRegister=async()=>{
+    if(!_useServer){
+      // クライアントサイド実装
+      const races=await dbAll('raceResults');
+      const existing=new Set((await dbAll('players')).filter(p=>p.regNo).map(p=>String(p.regNo).padStart(6,'0')));
+      const toAdd=new Map();
+      races.forEach(r=>{
+        (r.entries||[]).forEach(e=>{
+          const rn=String(e.regNo||'').padStart(6,'0');
+          if(!rn||existing.has(rn)||toAdd.has(rn))return;
+          toAdd.set(rn,{regNo:rn,name:e.name,prefecture:e.prefecture,kyaku:e.kyaku,grade:''});
+        });
+      });
+      for(const p of toAdd.values()){await dbPut('players',p);}
+      alert(`選手を${toAdd.size}名追加しました`);
+      reload();
+      return;
+    }
     try{
       const r=await fetch(`${_serverBase}/api/auto_register`,{method:'POST'});
+      const ct=r.headers.get('content-type')||'';
+      if(!ct.includes('json'))return alert('サーバー応答が不正');
       const d=await r.json();
       alert(`選手を${d.added}名追加しました`);
       reload();
