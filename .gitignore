@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+__pycache__/
+*.pyc
+
+# ローカルDB（サーバー側で再生成）
+keirinsign_data.db
+keirinsign_data.db-journal
+keirinsign_data.db-wal
+keirinsign_data.db-shm
+
+# Claude Code設定
+.claude/
+
+# ログ
+*.log

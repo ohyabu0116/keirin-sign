@@ -1,0 +1,1448 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="競輪サイン">
+<title>競輪サイン予想</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#f5f1eb;--bg2:#fffdf8;--bg3:#ede5d7;--border:#c8b89c;
+  --text:#2a1f10;--text2:#6b5530;
+  --accent:#b8651a;--accent2:#8a4710;
+  --green:#3a7a2a;--red:#bb2200;--yellow:#a06a0a;--blue:#1a5588;
+}
+body{background:var(--bg);color:var(--text);font-family:'Hiragino Sans','Noto Sans JP',sans-serif;font-size:14px;overflow-x:hidden}
+input,select,textarea,button{font-family:inherit;font-size:14px}
+
+/* 車番チップ（競輪9車立て対応） */
+.chip{display:inline-flex;align-items:center;justify-content:center;border-radius:4px;font-weight:900;line-height:1;flex-shrink:0;font-family:Arial,sans-serif}
+.chip.b1{background:#ffffff;color:#000;border:1px solid #999}
+.chip.b2{background:#111;color:#fff}
+.chip.b3{background:#dd0000;color:#fff}
+.chip.b4{background:#1155cc;color:#fff}
+.chip.b5{background:#f5c518;color:#111}
+.chip.b6{background:#1aaa55;color:#fff}
+.chip.b7{background:#ff5e15;color:#fff}
+.chip.b8{background:#e870c0;color:#fff}
+.chip.b9{background:#7a5cd9;color:#fff}
+.chip.sm{width:22px;height:22px;font-size:12px}
+.chip.md{width:28px;height:28px;font-size:14px}
+.chip.lg{width:36px;height:36px;font-size:18px}
+
+.kyaku{display:inline-block;font-size:11px;padding:1px 5px;border-radius:3px;font-weight:700}
+.kyaku.nige{background:#ffe5e5;color:#bb1100;border:1px solid #cc4422}
+.kyaku.ryo{background:#fff5cc;color:#aa6600;border:1px solid #cc9922}
+.kyaku.oi{background:#e8e8e8;color:#333;border:1px solid #888}
+
+.grade-cls{display:inline-block;font-size:10px;padding:1px 4px;border-radius:3px;font-weight:700;white-space:nowrap}
+.grade-cls.s{background:#a01515;color:#fff}
+.grade-cls.a{background:#1a6699;color:#fff}
+.grade-cls.c{background:#666;color:#fff}
+.grade-cls.g{background:#cc4488;color:#fff}
+
+/* レイアウト */
+.app{display:flex;flex-direction:column;min-height:100vh}
+.header{background:var(--bg2);border-bottom:1px solid var(--border);padding:11px 16px;display:flex;align-items:center;gap:10px;position:sticky;top:0;z-index:100}
+.header h1{font-size:16px;color:var(--accent);font-weight:800;letter-spacing:.5px}
+.header .sub{margin-left:auto;color:var(--text2);font-size:12px}
+.content{flex:1;padding:14px;padding-bottom:76px;max-width:680px;margin:0 auto;width:100%}
+.tab-bar{position:fixed;bottom:0;left:0;right:0;background:var(--bg2);border-top:1px solid var(--border);display:flex;z-index:100}
+.tab{flex:1;display:flex;flex-direction:column;align-items:center;padding:7px 0 5px;cursor:pointer;border:none;background:none;color:var(--text2);font-size:10px;gap:2px}
+.tab.active{color:var(--accent)}
+.tab .icon{font-size:20px}
+
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:13px;margin-bottom:12px}
+.card-title{font-size:12px;color:var(--text2);margin-bottom:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+
+.field{margin-bottom:11px}
+.field label{display:block;color:var(--text2);font-size:12px;margin-bottom:4px}
+.inp{background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:8px 10px;width:100%;outline:none;transition:border-color .15s}
+.inp:focus{border-color:var(--accent)}
+.sel{background:var(--bg3);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:7px 8px;outline:none;cursor:pointer}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:9px 16px;border-radius:8px;border:none;font-weight:700;cursor:pointer;font-size:14px;transition:all .15s;min-height:44px}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent2)}
+.btn-success{background:var(--green);color:#fff}
+.btn-danger{background:var(--red);color:#fff}
+.btn-ghost{background:var(--bg3);color:var(--text);border:1px solid var(--border)}
+.btn-sm{padding:5px 10px;font-size:12px;border-radius:6px;min-height:34px}
+.row{display:flex;gap:8px;align-items:flex-end}
+.row>.field{flex:1;margin-bottom:0}
+.row>div{flex:1}
+
+.badge{display:inline-flex;align-items:center;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:700;white-space:nowrap}
+.badge-link{background:rgba(58,122,42,0.12);color:var(--green);border:1px solid var(--green)}
+.badge-elim{background:rgba(187,34,0,0.1);color:var(--red);border:1px solid var(--red)}
+.badge-sign{background:rgba(160,106,10,0.1);color:var(--yellow);border:1px solid var(--yellow)}
+.badge-info{background:var(--bg3);color:var(--text2);border:1px solid var(--border)}
+
+.race-table{width:100%;border-collapse:collapse}
+.race-table th{color:var(--text2);font-size:11px;font-weight:600;padding:6px 3px;text-align:left;border-bottom:1px solid var(--border)}
+.race-table td{padding:5px 3px;vertical-align:middle}
+.race-table tr{height:46px;border-bottom:1px solid rgba(200,184,156,0.4)}
+.race-table tr:last-child{border-bottom:none}
+
+.dropdown{position:relative}
+.dd-list{position:absolute;top:100%;left:0;right:0;background:var(--bg3);border:1px solid var(--accent);border-top:none;border-radius:0 0 7px 7px;z-index:500;max-height:280px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.dd-item{padding:9px 11px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:13px;min-height:44px}
+.dd-item:hover{background:var(--bg2)}
+.dd-clear{color:var(--red)}
+
+.ticket{display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--bg3);border-radius:7px;margin-bottom:5px;border:1px solid var(--border)}
+.ticket.tier-top{border-color:var(--yellow);background:rgba(160,106,10,0.06)}
+.ticket.tier-main{border-color:var(--green);background:rgba(58,122,42,0.04)}
+.ticket-arrow{color:var(--text2);font-size:12px}
+
+.hist-item{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:9px 12px;margin-bottom:7px}
+
+.section-title{font-size:12px;color:var(--text2);font-weight:700;letter-spacing:.5px;margin-bottom:9px;text-transform:uppercase}
+.divider{border:none;border-top:1px solid var(--border);margin:12px 0}
+.empty{text-align:center;padding:28px 16px;color:var(--text2);font-size:13px}
+
+/* iOS最適化 */
+*{-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+input,select,textarea{touch-action:auto}
+.sel,.inp{min-height:44px;font-size:16px}
+.dd-item{min-height:44px;padding:10px 12px}
+.tab-bar{padding-bottom:env(safe-area-inset-bottom,0px)}
+.content{padding-bottom:calc(76px + env(safe-area-inset-bottom,0px))}
+.header{padding-top:max(11px, env(safe-area-inset-top,0px))}
+
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+.line-group{display:inline-flex;gap:3px;padding:3px 5px;border-radius:5px;background:var(--bg3);border:1px dashed var(--border);align-items:center}
+
+@media(max-width:480px){
+  body{font-size:15px}
+  .content{padding:10px 10px calc(76px + env(safe-area-inset-bottom,0px))}
+  .card{padding:12px}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const{useState,useEffect,useMemo,useRef,useCallback}=React;
+
+/* ====================================================================
+   DB ハイブリッドストレージ (boat-sign と同じ設計)
+   サーバーあり: SQLite経由 / サーバーなし: IndexedDB
+==================================================================== */
+let _useServer=false, _serverBase='';
+let _idb=null;
+const IDB_NAME='KeirinSignDB';
+
+function _getIDB(){
+  if(_idb) return Promise.resolve(_idb);
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open(IDB_NAME,2);
+    r.onupgradeneeded=e=>{
+      const d=e.target.result;
+      ['players','raceResults','signConditions','signTracking','discoveries'].forEach(n=>{
+        if(!d.objectStoreNames.contains(n)){
+          d.createObjectStore(n,{keyPath:'id',autoIncrement:true});
+        }
+      });
+    };
+    r.onsuccess=e=>{_idb=e.target.result;res(_idb)};
+    r.onerror=e=>rej(e);
+  });
+}
+async function _idbAll(store){
+  const db=await _getIDB();
+  return new Promise((res,rej)=>{
+    const t=db.transaction(store,'readonly');
+    const r=t.objectStore(store).getAll();
+    r.onsuccess=()=>res(r.result||[]); r.onerror=()=>rej(r.error);
+  });
+}
+async function _idbPut(store,data){
+  const db=await _getIDB();
+  return new Promise((res,rej)=>{
+    const t=db.transaction(store,'readwrite');
+    const r=t.objectStore(store).put(data);
+    r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error);
+  });
+}
+async function _idbDel(store,id){
+  const db=await _getIDB();
+  return new Promise((res,rej)=>{
+    const t=db.transaction(store,'readwrite');
+    const r=t.objectStore(store).delete(id);
+    r.onsuccess=()=>res(); r.onerror=()=>rej(r.error);
+  });
+}
+
+async function dbAll(store){
+  if(_useServer){
+    try{
+      const r=await fetch(`${_serverBase}/api/db/${store}`);
+      const d=await r.json();
+      return d.data||[];
+    }catch(e){_useServer=false;}
+  }
+  return _idbAll(store);
+}
+async function dbPut(store,data){
+  if(_useServer){
+    try{
+      const r=await fetch(`${_serverBase}/api/db/${store}`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(data)
+      });
+      const d=await r.json();
+      return d.id;
+    }catch(e){_useServer=false;}
+  }
+  return _idbPut(store,data);
+}
+async function dbDel(store,id){
+  if(_useServer){
+    try{await fetch(`${_serverBase}/api/db/${store}/${id}`,{method:'DELETE'});return;}
+    catch(e){_useServer=false;}
+  }
+  return _idbDel(store,id);
+}
+
+// ★ Railway デプロイ後ここを実URLに書き換える
+const RAILWAY_URL='https://keirin-sign-production.up.railway.app';
+
+async function _tryRailway(){
+  try{
+    const r=await fetch(`${RAILWAY_URL}/api/ping`,{signal:AbortSignal.timeout(12000)});
+    const d=await r.json();
+    if(d.ok===true){_useServer=true;_serverBase=RAILWAY_URL;return true;}
+  }catch(e){}
+  return false;
+}
+
+async function initStorage(){
+  // 1. ローカルサーバー (start_server.command 起動時)
+  try{
+    const r=await fetch('/api/ping',{signal:AbortSignal.timeout(2500)});
+    const d=await r.json();
+    if(d.ok===true){_useServer=true;_serverBase='';return 'local';}
+  }catch(e){}
+
+  // 2. Railway (GitHub Pages 経由でアクセス時)
+  if(await _tryRailway()) return 'cloud';
+
+  // 3. IndexedDB フォールバック (外出モード)
+  // 空の場合は keirinsign_export.json から自動シード
+  try{
+    const existing=await _idbAll('players');
+    if(existing.length===0){
+      const resp=await fetch('./keirinsign_export.json',{signal:AbortSignal.timeout(20000)});
+      if(resp.ok){
+        const data=await resp.json();
+        const db=await _getIDB();
+        for(const store of ['players','raceResults','signConditions','signTracking','discoveries']){
+          const records=data[store]||[];
+          if(records.length>0){
+            await new Promise((res,rej)=>{
+              const t=db.transaction(store,'readwrite');
+              const os=t.objectStore(store);
+              records.forEach(rec=>os.put(rec));
+              t.oncomplete=()=>res();
+              t.onerror=()=>rej(t.error);
+            });
+          }
+        }
+      }
+    }
+  }catch(e){console.error('auto-seed:',e);}
+  return 'idb';
+}
+
+/* ====================================================================
+   ユーティリティ
+==================================================================== */
+const VENUES=['函館','青森','いわき平','弥彦','前橋','取手','宇都宮','大宮','西武園','京王閣','立川',
+              '松戸','千葉','川崎','平塚','小田原','伊東','静岡',
+              '名古屋','岐阜','大垣','豊橋','富山','松阪','四日市',
+              '福井','奈良','向日町','和歌山','岸和田',
+              '玉野','広島','防府','高松','小松島','高知','松山',
+              '小倉','久留米','武雄','佐世保','別府','熊本'];
+
+const COND_TYPES=[
+  {value:'COURSE_LINK',label:'コース連動',emoji:'🔗',desc:'同一選手・同一車番が出走時、N走前の決まり目連動'},
+  {value:'LINE_LINK',label:'ライン連動',emoji:'🚴',desc:'強ライン構成時の自動連動 (手動マーキング)'},
+  {value:'RACER_SIGN',label:'サインレーサー',emoji:'🌟',desc:'特定選手出走時のサイン'},
+  {value:'KYAKU_PATTERN',label:'脚質構成',emoji:'📊',desc:'構成パターンによる勝者脚質予測'},
+];
+
+function permutations(arr,r){
+  if(r===0)return[[]];
+  const out=[];
+  arr.forEach((x,i)=>{
+    const rest=[...arr.slice(0,i),...arr.slice(i+1)];
+    permutations(rest,r-1).forEach(p=>out.push([x,...p]));
+  });
+  return out;
+}
+
+function classifyGrade(syumoku){
+  if(!syumoku) return '';
+  if(syumoku.includes('Ｓ級')||syumoku.includes('S級')) return 'S';
+  if(syumoku.includes('Ａ級')||syumoku.includes('A級')) return 'A';
+  if(syumoku.includes('チャレンジ')) return 'C';
+  if(syumoku.includes('ガールズ')) return 'G';
+  return '';
+}
+
+/* ====================================================================
+   分析エンジン (本日のレース判定 + 買い目生成)
+==================================================================== */
+function runAnalysis({entries,raceResults,signConditions,players,discoveries=[],venue='',narabi=[]}){
+  const pm={};players.forEach(p=>pm[p.id]=p);
+  const pmByReg={};players.forEach(p=>{if(p.regNo)pmByReg[String(p.regNo).padStart(6,'0')]=p});
+  const alerts=[];
+  const linkedSet=new Set();
+
+  for(const cond of signConditions){
+    if(!cond.active) continue;
+    const todayE=entries.find(e=>e.regNo&&String(e.regNo)===String(cond.regNo));
+    if(!todayE&&cond.conditionType!=='KYAKU_PATTERN') continue;
+    const p=pmByReg[String(cond.regNo).padStart(6,'0')]||null;
+
+    /* コース連動 */
+    if(cond.conditionType==='COURSE_LINK'){
+      if(String(todayE.syaban)!==String(cond.syaban)) continue;
+      const pastRaces=raceResults
+        .filter(r=>(r.entries||[]).some(e=>String(e.regNo)===String(cond.regNo)&&String(e.syaban)===String(cond.syaban))
+                   &&(!cond.venue||r.venue===cond.venue))
+        .sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+      const lb=parseInt(cond.lookback)||3;
+      if(pastRaces.length<lb){
+        alerts.push({type:'COURSE_LINK',status:'NO_DATA',regNo:cond.regNo,pName:p?.name||cond.regNo,
+          syaban:todayE.syaban,lookback:lb,pastCount:pastRaces.length,condId:cond.id});
+        continue;
+      }
+      const ref=pastRaces[lb-1];
+      const kimes=[ref.result1,ref.result2,ref.result3].filter(Boolean).map(Number);
+      const kimeRegs=kimes
+        .map(bn=>ref.entries?.find(e=>Number(e.syaban)===bn)?.regNo)
+        .filter(Boolean).map(String);
+      const linked=entries.filter(e=>e.regNo&&kimeRegs.includes(String(e.regNo)));
+      alerts.push({type:'COURSE_LINK',
+        status:linked.length>=2?'FULL':linked.length===1?'PARTIAL':'NONE',
+        regNo:cond.regNo,pName:p?.name||cond.regNo,syaban:todayE.syaban,
+        ref,kimes,kimeRegs,linked,condId:cond.id});
+      linked.forEach(e=>linkedSet.add(e.syaban));
+    }
+
+    /* ライン連動 (手動入力ライン依存) */
+    if(cond.conditionType==='LINE_LINK'){
+      // ライン情報があれば、特定ラインから2人以上が来る前提で連動艇を追加
+      const targetLineIdx=parseInt(cond.targetLine);
+      if(narabi&&narabi.length>0&&targetLineIdx>=0){
+        const line=narabi[targetLineIdx];
+        if(line&&line.length>=2){
+          alerts.push({type:'LINE_LINK',status:'ALERT',
+            regNo:cond.regNo,pName:p?.name||cond.regNo,
+            syaban:todayE?.syaban,desc:cond.description||`ライン${targetLineIdx+1}連動`,
+            line,condId:cond.id});
+          line.forEach(bn=>linkedSet.add(bn));
+        }
+      }
+    }
+
+    /* サインレーサー */
+    if(cond.conditionType==='RACER_SIGN'){
+      alerts.push({type:'RACER_SIGN',status:'ALERT',regNo:cond.regNo,pName:p?.name||cond.regNo,
+        syaban:todayE.syaban,desc:cond.description,condId:cond.id});
+      if(cond.relatedBoats){
+        String(cond.relatedBoats).split(',').forEach(s=>{
+          const n=parseInt(s.trim());
+          if(n>=1&&n<=9) linkedSet.add(n);
+        });
+      }
+    }
+
+    /* 脚質構成 */
+    if(cond.conditionType==='KYAKU_PATTERN'){
+      const nige=entries.filter(e=>e.regNo&&e.kyaku==='逃').length;
+      const ryo=entries.filter(e=>e.regNo&&e.kyaku==='両').length;
+      const oi=entries.filter(e=>e.regNo&&e.kyaku==='追').length;
+      const n=entries.filter(e=>e.regNo).length;
+      const myPattern=`逃${nige}/両${ryo}/追${oi}/${n}車`;
+      if(cond.pattern===myPattern){
+        alerts.push({type:'KYAKU_PATTERN',status:'ALERT',pattern:myPattern,
+          winnerKyaku:cond.winnerKyaku,rate:cond.rate,trials:cond.trials,
+          desc:cond.description,condId:cond.id});
+        entries.forEach(e=>{
+          if(e.regNo&&e.kyaku===cond.winnerKyaku) linkedSet.add(e.syaban);
+        });
+      }
+    }
+  }
+
+  // 自動発見の連動チェック
+  discoveries.filter(d=>d.type==='COURSE_LINK').forEach(d=>{
+    if(d.venue&&venue&&d.venue!==venue) return;
+    const myE=entries.find(en=>String(en.regNo)===String(d.regNo));
+    if(!myE) return;
+    if(String(myE.syaban)!==String(d.syaban)) return;
+    const pastRaces=raceResults
+      .filter(r=>r.venue===d.venue&&(r.entries||[]).some(en=>String(en.regNo)===String(d.regNo)&&Number(en.syaban)===Number(d.syaban))&&r.result1)
+      .sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.raceNo-b.raceNo));
+    if(pastRaces.length<d.lookback) return;
+    const refRace=pastRaces[pastRaces.length-d.lookback];
+    const refBoats=[refRace.result1,refRace.result2,refRace.result3].filter(Boolean).map(Number);
+    alerts.push({type:'COURSE_LINK_AUTO',status:'ALERT',regNo:d.regNo,pName:d.playerName,
+      syaban:myE.syaban,venue:d.venue,lookback:d.lookback,refRace,refBoats,
+      trials:d.trials,rate:d.rate2,desc:d.desc});
+    refBoats.forEach(bn=>linkedSet.add(bn));
+  });
+
+  // 買い目生成
+  const activeBoats=Array.from(new Set(entries.filter(e=>e.regNo).map(e=>Number(e.syaban)))).sort((a,b)=>a-b);
+  const linked=[...linkedSet].filter(n=>activeBoats.includes(n));
+  const others=activeBoats.filter(n=>!linked.includes(n));
+  const tickets=[];
+
+  if(linked.length>=3){
+    permutations(linked.slice(0,4),3).forEach(([a,b,c])=>tickets.push({combo:[a,b,c],tier:'top'}));
+    if(others.length>0&&linked.length===3){
+      others.slice(0,2).forEach(o=>{
+        permutations([...linked,o],3).filter(([a])=>linked.includes(a))
+          .forEach(([a,b,c])=>{
+            if(!tickets.find(t=>t.combo.join()===`${a},${b},${c}`)) tickets.push({combo:[a,b,c],tier:'main'});
+          });
+      });
+    }
+  }else if(linked.length===2){
+    permutations(linked,2).forEach(([a,b])=>{
+      others.forEach(c=>{
+        tickets.push({combo:[a,b,c],tier:'main'});
+      });
+    });
+  }else if(linked.length===1){
+    const[l]=linked;
+    permutations(others.filter(n=>n!==l),2).forEach(([b,c])=>{
+      tickets.push({combo:[l,b,c],tier:'main'});
+    });
+  }
+
+  return{alerts,linked:[...linkedSet],tickets:tickets.slice(0,24)};
+}
+
+/* ====================================================================
+   小コンポーネント
+==================================================================== */
+function Chip({no,size='md'}){return<span className={`chip b${no} ${size}`}>{no}</span>}
+function KyakuBadge({k}){
+  if(!k) return null;
+  const cls=k==='逃'?'nige':k==='両'?'ryo':'oi';
+  return<span className={`kyaku ${cls}`}>{k}</span>;
+}
+function GradeBadge({s}){
+  if(!s) return null;
+  const c=classifyGrade(s);
+  const cls=c==='S'?'s':c==='A'?'a':c==='G'?'g':'c';
+  return<span className={`grade-cls ${cls}`}>{s}</span>;
+}
+
+function PlayerSearch({players,value,onChange,placeholder='選手名・登番'}){
+  const[q,setQ]=useState('');
+  const[open,setOpen]=useState(false);
+  const ref=useRef(null);
+  const sel=players.find(p=>String(p.regNo)===String(value)||p.id==value);
+  const filtered=useMemo(()=>{
+    const s=q.toLowerCase();
+    return(q?players.filter(p=>p.name?.toLowerCase().includes(s)||String(p.regNo||'').includes(s)):players).slice(0,30);
+  },[players,q]);
+  useEffect(()=>{
+    const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false)};
+    document.addEventListener('mousedown',h);
+    document.addEventListener('touchstart',h,{passive:true});
+    return()=>{document.removeEventListener('mousedown',h);document.removeEventListener('touchstart',h)};
+  },[]);
+  return(
+    <div className="dropdown" ref={ref}>
+      <input className="inp" style={{width:'100%'}}
+        value={open?q:(sel?`${sel.regNo||''} ${sel.name}`:'')}
+        onChange={e=>{setQ(e.target.value);setOpen(true)}}
+        onFocus={()=>{setQ('');setOpen(true)}}
+        placeholder={placeholder}
+      />
+      {open&&(
+        <div className="dd-list">
+          {value&&<div className="dd-item dd-clear" onClick={()=>{onChange(null);setOpen(false);setQ('')}}>✕ クリア</div>}
+          {filtered.map(p=>(
+            <div key={p.id} className="dd-item" onClick={()=>{onChange(p.regNo);setOpen(false);setQ('')}}>
+              <span style={{color:'var(--text2)',minWidth:'52px',fontSize:'12px'}}>{p.regNo}</span>
+              <span style={{flex:1}}>{p.name}</span>
+              <KyakuBadge k={p.kyaku}/>
+              {p.prefecture&&<span style={{fontSize:'10px',color:'var(--text2)'}}>{p.prefecture}</span>}
+            </div>
+          ))}
+          {!filtered.length&&<div style={{padding:'10px',color:'var(--text2)',fontSize:'12px'}}>見つかりません</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ====================================================================
+   ライン入力UI (競輪特有)
+==================================================================== */
+function NarabiEditor({entries,narabi,onChange}){
+  // ラインは [[1,2,5],[3,7],[4,6]] のような配列。 (車番のグループ)
+  // UIではテキストで「1-2-5 3-7 4-6」のように入力
+  const [text,setText]=useState(narabi.map(l=>l.join('-')).join(' '));
+  useEffect(()=>{setText(narabi.map(l=>l.join('-')).join(' '))},[narabi]);
+  const apply=(v)=>{
+    setText(v);
+    const groups=v.trim().split(/\s+/).filter(Boolean).map(g=>g.split('-').map(Number).filter(n=>n>=1&&n<=9));
+    onChange(groups);
+  };
+  return(
+    <div>
+      <input className="inp" value={text} onChange={e=>apply(e.target.value)}
+        placeholder="例: 1-2-5 3-7 4-6 (3分戦)"/>
+      <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+        ライン構成を空白区切り。先頭が先頭員(競り)、後ろが番手。
+      </div>
+      {narabi.length>0&&(
+        <div style={{marginTop:'8px',display:'flex',gap:'5px',flexWrap:'wrap'}}>
+          {narabi.map((line,i)=>(
+            <div key={i} className="line-group">
+              <span style={{fontSize:'10px',color:'var(--text2)',marginRight:'2px'}}>L{i+1}</span>
+              {line.map(bn=><Chip key={bn} no={bn} size="sm"/>)}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ====================================================================
+   予想画面
+==================================================================== */
+const mkEntries=(n=7)=>Array.from({length:n},(_,i)=>({syaban:i+1,regNo:null,kyaku:'',prefecture:''}));
+
+function TodayScreen({players,raceResults,signConditions,discoveries=[],reload}){
+  const today=new Date().toISOString().slice(0,10);
+  const[venue,setVenue]=useState('函館');
+  const[raceNo,setRaceNo]=useState('1');
+  const[date,setDate]=useState(today);
+  const[racerCount,setRacerCount]=useState(7);
+  const[entries,setEntries]=useState(mkEntries(7));
+  const[narabi,setNarabi]=useState([]);
+  const[result,setResult]=useState(null);
+  const[availableVenues,setAvailableVenues]=useState(null);
+  const[venuesLoading,setVenuesLoading]=useState(false);
+  const[fetching,setFetching]=useState(false);
+  const[fetchMsg,setFetchMsg]=useState(null);
+  const pmByReg=useMemo(()=>{const m={};players.forEach(p=>{if(p.regNo)m[String(p.regNo).padStart(6,'0')]=p});return m;},[players]);
+
+  useEffect(()=>{
+    if(!date) return;
+    setVenuesLoading(true); setAvailableVenues(null);
+    fetch(`${_serverBase}/api/racing_venues?date=${date}`)
+      .then(r=>r.json())
+      .then(d=>{
+        if(d.ok&&d.venues&&d.venues.length>0){
+          setAvailableVenues(d.venues);
+          if(!d.venues.find(v=>v.name===venue)) setVenue(d.venues[0].name);
+        }else setAvailableVenues([]);
+      })
+      .catch(()=>setAvailableVenues(null))
+      .finally(()=>setVenuesLoading(false));
+  },[date]);
+
+  const upd=(syaban,field,val)=>{
+    setEntries(prev=>prev.map(e=>e.syaban===syaban?{...e,[field]:val}:e));
+    setResult(null);
+  };
+
+  const analyze=()=>setResult(runAnalysis({entries,raceResults,signConditions,players,discoveries,venue,narabi}));
+
+  const clearAll=()=>{
+    setEntries(mkEntries(racerCount));
+    setNarabi([]); setResult(null); setFetchMsg(null);
+  };
+
+  async function fetchRacelist(){
+    setFetching(true); setFetchMsg(null);
+    try{
+      const url=`${_serverBase}/api/racelist?venue=${encodeURIComponent(venue)}&date=${date}&raceNo=${raceNo}`;
+      const res=await fetch(url);
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data=await res.json();
+      if(!data.ok) throw new Error(data.error||'取得失敗');
+      const n=data.racers.length;
+      const newEntries=mkEntries(n);
+      data.racers.forEach(r=>{
+        const ent=newEntries.find(e=>e.syaban===r.syaban);
+        if(!ent) return;
+        ent.regNo=String(r.regNo).padStart(6,'0');
+        ent.name=r.name;
+        ent.kyaku=r.kyaku;
+        ent.prefecture=r.prefecture;
+        ent.note=r.note;
+      });
+      setRacerCount(n);
+      setEntries(newEntries);
+      setNarabi([]);
+      setResult(null);
+      // 未登録選手の自動登録
+      const existing=new Set(players.filter(p=>p.regNo).map(p=>String(p.regNo).padStart(6,'0')));
+      const toAdd=data.racers.filter(r=>!existing.has(String(r.regNo).padStart(6,'0')));
+      if(toAdd.length>0){
+        for(const r of toAdd){
+          await dbPut('players',{
+            regNo:String(r.regNo).padStart(6,'0'),
+            name:r.name,prefecture:r.prefecture,kyaku:r.kyaku,grade:''
+          });
+        }
+        if(reload) await reload();
+      }
+      setFetchMsg({ok:true,text:`✓ 出走表取得完了 (${n}車立て、${data.syumoku||''})${toAdd.length>0?` / 新規${toAdd.length}名を選手DBに追加`:''}`});
+    }catch(e){
+      setFetchMsg({ok:false,text:`✗ ${e.message}\n\nサーバーが起動していない可能性があります。\n「start_server.command」を起動してください。`});
+    }finally{setFetching(false)}
+  }
+
+  return(
+    <div>
+      <div className="card">
+        <div className="card-title">レース選択</div>
+        <div className="row">
+          <div>
+            <span style={{color:'var(--text2)',fontSize:'12px',display:'block',marginBottom:'4px'}}>
+              開催場
+              {venuesLoading&&<span style={{color:'var(--accent)',fontSize:'10px',marginLeft:'6px'}}>⏳確認中...</span>}
+              {!venuesLoading&&availableVenues&&availableVenues.length>0&&<span style={{color:'var(--green)',fontSize:'10px',marginLeft:'6px'}}>✓ {availableVenues.length}場</span>}
+              {!venuesLoading&&availableVenues&&availableVenues.length===0&&<span style={{color:'var(--red)',fontSize:'10px',marginLeft:'6px'}}>開催なし</span>}
+            </span>
+            <select className="sel inp" value={venue} onChange={e=>setVenue(e.target.value)} style={{width:'100%'}}>
+              {(availableVenues&&availableVenues.length>0?availableVenues.map(v=>v.name):VENUES).map(v=><option key={v}>{v}</option>)}
+            </select>
+          </div>
+          <div style={{flex:'0 0 70px'}}>
+            <span style={{color:'var(--text2)',fontSize:'12px',display:'block',marginBottom:'4px'}}>R</span>
+            <select className="sel inp" value={raceNo} onChange={e=>setRaceNo(e.target.value)} style={{width:'100%'}}>
+              {[...Array(12)].map((_,i)=><option key={i+1}>{i+1}</option>)}
+            </select>
+          </div>
+          <div>
+            <span style={{color:'var(--text2)',fontSize:'12px',display:'block',marginBottom:'4px'}}>日付</span>
+            <input type="date" className="inp" value={date} onChange={e=>setDate(e.target.value)}/>
+          </div>
+        </div>
+        <button className="btn btn-success" onClick={fetchRacelist} disabled={fetching}
+          style={{width:'100%',marginTop:'10px',fontSize:'13px'}}>
+          {fetching?'⏳ 取得中...':'🔍 出走表を自動取得 (KEIRIN.JP)'}
+        </button>
+        {fetchMsg&&(
+          <div style={{
+            marginTop:'8px',padding:'9px 11px',borderRadius:'7px',fontSize:'12px',lineHeight:'1.6',
+            background:fetchMsg.ok?'rgba(58,122,42,0.07)':'rgba(187,34,0,0.07)',
+            border:`1px solid ${fetchMsg.ok?'var(--green)':'var(--red)'}`,
+            color:fetchMsg.ok?'var(--green)':'var(--red)',
+            whiteSpace:'pre-wrap',
+          }}>{fetchMsg.text}</div>
+        )}
+      </div>
+
+      <div className="card">
+        <div className="card-title">出走表 ({racerCount}車立て)</div>
+        <table className="race-table">
+          <thead>
+            <tr>
+              <th style={{width:'40px'}}>車番</th>
+              <th>選手</th>
+              <th style={{width:'50px'}}>脚質</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map(e=>{
+              const p=pmByReg[String(e.regNo).padStart(6,'0')];
+              return(
+                <tr key={e.syaban}>
+                  <td><Chip no={e.syaban} size="md"/></td>
+                  <td>
+                    <PlayerSearch players={players}
+                      value={e.regNo}
+                      onChange={v=>{
+                        upd(e.syaban,'regNo',v);
+                        if(v){
+                          const pp=players.find(x=>String(x.regNo)===String(v));
+                          if(pp){
+                            upd(e.syaban,'name',pp.name);
+                            upd(e.syaban,'kyaku',pp.kyaku);
+                            upd(e.syaban,'prefecture',pp.prefecture);
+                          }
+                        }
+                      }}/>
+                  </td>
+                  <td><KyakuBadge k={e.kyaku||p?.kyaku}/></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{marginTop:'10px',display:'flex',gap:'8px'}}>
+          <select className="sel" value={racerCount} onChange={e=>{
+            const n=Number(e.target.value);
+            setRacerCount(n);
+            setEntries(prev=>{
+              const cur=[...prev];
+              if(n>cur.length){
+                for(let i=cur.length;i<n;i++) cur.push({syaban:i+1,regNo:null});
+              }else{
+                cur.length=n;
+              }
+              return cur;
+            });
+          }}>
+            <option value={7}>7車立て</option>
+            <option value={9}>9車立て</option>
+          </select>
+          <button className="btn btn-ghost btn-sm" onClick={clearAll}>クリア</button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-title">ライン構成 (任意)</div>
+        <NarabiEditor entries={entries} narabi={narabi} onChange={setNarabi}/>
+      </div>
+
+      <div style={{display:'flex',gap:'10px',marginBottom:'12px'}}>
+        <button className="btn btn-primary" onClick={analyze} style={{flex:1}}>🔬 サイン分析</button>
+      </div>
+
+      {result&&(
+        <AnalysisResult result={result} entries={entries} pmByReg={pmByReg}/>
+      )}
+    </div>
+  );
+}
+
+function AnalysisResult({result,entries,pmByReg}){
+  if(!result) return null;
+  const{alerts,linked,tickets}=result;
+  return(
+    <>
+      <div className="card">
+        <div className="card-title">サイン検出</div>
+        {alerts.length===0&&<div className="empty">該当サインなし</div>}
+        {alerts.map((a,i)=>{
+          let color='var(--yellow)';
+          if(a.status==='FULL') color='var(--green)';
+          if(a.status==='PARTIAL') color='var(--accent)';
+          if(a.status==='NO_DATA'||a.status==='NONE') color='var(--text2)';
+          return(
+            <div key={i} style={{padding:'10px 12px',borderRadius:'8px',marginBottom:'7px',
+              border:`1px solid ${color}`,background:`rgba(${a.status==='FULL'?'58,122,42':a.status==='PARTIAL'?'184,101,26':'160,106,10'},0.06)`}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                {a.syaban&&<Chip no={a.syaban} size="sm"/>}
+                <span style={{fontWeight:'800'}}>{a.pName||a.pattern}</span>
+                <span className="badge badge-sign">{COND_TYPES.find(t=>t.value===a.type||a.type.startsWith(t.value))?.label||a.type}</span>
+                {a.rate&&<span style={{fontSize:'11px',color:'var(--text2)'}}>{a.rate}%</span>}
+              </div>
+              {a.desc&&<div style={{fontSize:'12px',color:'var(--text2)',marginTop:'5px'}}>{a.desc}</div>}
+              {a.linked&&a.linked.length>0&&(
+                <div style={{marginTop:'6px',display:'flex',gap:'4px',alignItems:'center'}}>
+                  <span style={{fontSize:'11px',color:'var(--text2)'}}>連動艇:</span>
+                  {a.linked.map(e=><Chip key={e.syaban} no={e.syaban} size="sm"/>)}
+                </div>
+              )}
+              {a.refBoats&&(
+                <div style={{marginTop:'6px',fontSize:'11px',color:'var(--text2)'}}>
+                  参照{a.lookback}走前 {a.refRace?.venue} {a.refRace?.raceNo}R: {a.refBoats.join('-')}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {linked.length>0&&(
+        <div className="card">
+          <div className="card-title">連動艇 ({linked.length}艇)</div>
+          <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
+            {linked.map(n=><Chip key={n} no={n} size="lg"/>)}
+          </div>
+        </div>
+      )}
+
+      {tickets.length>0&&(
+        <div className="card">
+          <div className="card-title">買い目候補 ({tickets.length}点)</div>
+          {tickets.map((t,i)=>(
+            <div key={i} className={`ticket tier-${t.tier}`}>
+              <span style={{fontSize:'11px',color:'var(--text2)',width:'34px'}}>
+                {t.tier==='top'?'本命':t.tier==='main'?'対抗':'抑え'}
+              </span>
+              <Chip no={t.combo[0]} size="sm"/>
+              <span className="ticket-arrow">→</span>
+              <Chip no={t.combo[1]} size="sm"/>
+              <span className="ticket-arrow">→</span>
+              <Chip no={t.combo[2]} size="sm"/>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ====================================================================
+   選手DB画面
+==================================================================== */
+function PlayersScreen({players,reload}){
+  const[q,setQ]=useState('');
+  const[edit,setEdit]=useState(null);
+  const filtered=useMemo(()=>{
+    const s=q.toLowerCase();
+    return q?players.filter(p=>p.name?.toLowerCase().includes(s)||String(p.regNo||'').includes(s)):players;
+  },[players,q]);
+
+  const save=async()=>{
+    if(!edit.name) return alert('名前が必要');
+    await dbPut('players',edit);
+    setEdit(null);
+    reload();
+  };
+  const del=async()=>{
+    if(!confirm('削除しますか?')) return;
+    await dbDel('players',edit.id);
+    setEdit(null);
+    reload();
+  };
+
+  return(
+    <div>
+      <div className="card">
+        <div className="card-title">選手DB ({players.length}名)</div>
+        <input className="inp" placeholder="検索 (名前・登番)" value={q} onChange={e=>setQ(e.target.value)}/>
+        <button className="btn btn-primary btn-sm" style={{marginTop:'8px'}} onClick={()=>setEdit({regNo:'',name:'',prefecture:'',kyaku:'',grade:''})}>+ 追加</button>
+      </div>
+      {filtered.slice(0,200).map(p=>(
+        <div key={p.id} className="hist-item" onClick={()=>setEdit(p)} style={{cursor:'pointer'}}>
+          <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+            <span style={{fontSize:'11px',color:'var(--text2)',width:'56px'}}>{p.regNo}</span>
+            <span style={{fontWeight:'700',flex:1}}>{p.name}</span>
+            <KyakuBadge k={p.kyaku}/>
+            <span style={{fontSize:'10px',color:'var(--text2)'}}>{p.prefecture}</span>
+          </div>
+        </div>
+      ))}
+      {filtered.length>200&&<div className="empty">… 他{filtered.length-200}名 (絞り込みしてください)</div>}
+
+      {edit&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',zIndex:1000,display:'flex',alignItems:'flex-end',justifyContent:'center'}}
+          onClick={()=>setEdit(null)}>
+          <div className="card" style={{width:'100%',maxWidth:'500px',margin:'10px',maxHeight:'90vh',overflowY:'auto'}} onClick={e=>e.stopPropagation()}>
+            <div className="card-title">{edit.id?'選手編集':'選手追加'}</div>
+            <div className="field"><label>登録番号</label><input className="inp" value={edit.regNo||''} onChange={e=>setEdit({...edit,regNo:e.target.value})}/></div>
+            <div className="field"><label>氏名</label><input className="inp" value={edit.name||''} onChange={e=>setEdit({...edit,name:e.target.value})}/></div>
+            <div className="field"><label>府県</label><input className="inp" value={edit.prefecture||''} onChange={e=>setEdit({...edit,prefecture:e.target.value})}/></div>
+            <div className="field"><label>脚質</label>
+              <select className="sel inp" value={edit.kyaku||''} onChange={e=>setEdit({...edit,kyaku:e.target.value})}>
+                <option value=""></option>
+                <option>逃</option><option>両</option><option>追</option>
+              </select>
+            </div>
+            <div className="field"><label>級班</label>
+              <select className="sel inp" value={edit.grade||''} onChange={e=>setEdit({...edit,grade:e.target.value})}>
+                <option value=""></option>
+                <option>SS</option><option>S1</option><option>S2</option>
+                <option>A1</option><option>A2</option><option>A3</option>
+                <option>L級(ガールズ)</option>
+              </select>
+            </div>
+            <div style={{display:'flex',gap:'8px'}}>
+              <button className="btn btn-primary" onClick={save} style={{flex:1}}>保存</button>
+              <button className="btn btn-ghost" onClick={()=>setEdit(null)} style={{flex:1}}>キャンセル</button>
+              {edit.id&&<button className="btn btn-danger" onClick={del}>削除</button>}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ====================================================================
+   サイン条件画面
+==================================================================== */
+function SignConditionsScreen({players,signConditions,discoveries,reload,raceResults}){
+  const[edit,setEdit]=useState(null);
+  const[showDiscover,setShowDiscover]=useState(false);
+  const[discResult,setDiscResult]=useState(null);
+  const[discRunning,setDiscRunning]=useState(false);
+
+  const save=async()=>{
+    if(!edit.conditionType) return alert('種類が必要');
+    await dbPut('signConditions',{...edit,active:edit.active!==false});
+    setEdit(null);
+    reload();
+  };
+  const del=async()=>{
+    if(!confirm('削除しますか?')) return;
+    await dbDel('signConditions',edit.id);
+    setEdit(null);
+    reload();
+  };
+  const toggleActive=async(c)=>{
+    await dbPut('signConditions',{...c,active:!c.active});
+    reload();
+  };
+
+  const runDiscover=async()=>{
+    setDiscRunning(true);
+    try{
+      const r=await fetch(`${_serverBase}/api/discover?min_trials=5&min_rate=90`);
+      const d=await r.json();
+      setDiscResult(d);
+    }catch(e){
+      alert('マイニング失敗: '+e.message);
+    }finally{setDiscRunning(false)}
+  };
+
+  const adoptDiscovery=async(d)=>{
+    await dbPut('discoveries',{...d,active:true,adoptedAt:Date.now()});
+    reload();
+    alert('採用しました');
+  };
+
+  return(
+    <div>
+      <div className="card">
+        <div className="card-title">サイン条件 ({signConditions.length}件)</div>
+        <button className="btn btn-primary btn-sm" onClick={()=>setEdit({conditionType:'COURSE_LINK',active:true,lookback:3})}>+ 手動追加</button>
+        <button className="btn btn-ghost btn-sm" style={{marginLeft:'8px'}} onClick={()=>setShowDiscover(!showDiscover)}>
+          {showDiscover?'閉じる':'🔬 自動マイニング'}
+        </button>
+      </div>
+
+      {showDiscover&&(
+        <div className="card">
+          <div className="card-title">サイン自動発見</div>
+          <p style={{fontSize:'12px',color:'var(--text2)',marginBottom:'10px'}}>
+            蓄積データから連動率90%以上のパターンを検出します(5回以上の試行)。
+          </p>
+          <button className="btn btn-success" onClick={runDiscover} disabled={discRunning} style={{width:'100%'}}>
+            {discRunning?'⏳ マイニング中...':'実行 (蓄積データから検索)'}
+          </button>
+          {discResult&&(
+            <div style={{marginTop:'12px'}}>
+              <div className="section-title">コース連動 ({discResult.courseLink?.length||0}件)</div>
+              {(discResult.courseLink||[]).slice(0,30).map((d,i)=>(
+                <div key={i} className="hist-item">
+                  <div style={{fontSize:'13px',fontWeight:'700'}}>{d.desc}</div>
+                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+                    {d.venue} | 試行{d.trials}回 | 2艇連動{d.rate2}% / 3艇連動{d.rate3}%
+                  </div>
+                  <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}} onClick={()=>adoptDiscovery(d)}>採用</button>
+                </div>
+              ))}
+              <div className="section-title" style={{marginTop:'14px'}}>競輪場×車番 ({discResult.venueSyaban?.length||0}件)</div>
+              {(discResult.venueSyaban||[]).slice(0,20).map((d,i)=>(
+                <div key={i} className="hist-item">
+                  <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+                    <Chip no={d.syaban} size="sm"/>
+                    <span style={{fontWeight:'700'}}>{d.venue}</span>
+                    <span style={{color:'var(--green)',fontWeight:'700',fontSize:'13px'}}>3着内{d.rate3}%</span>
+                  </div>
+                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+                    試行{d.trials}回 / 1着率{d.rateWin}%
+                  </div>
+                </div>
+              ))}
+              <div className="section-title" style={{marginTop:'14px'}}>車番×脚質 ({discResult.kyakuSyaban?.length||0}件)</div>
+              {(discResult.kyakuSyaban||[]).slice(0,15).map((d,i)=>(
+                <div key={i} className="hist-item">
+                  <div style={{fontSize:'13px',fontWeight:'700'}}>{d.desc}</div>
+                </div>
+              ))}
+              <div className="section-title" style={{marginTop:'14px'}}>脚質構成 ({discResult.kyakuPattern?.length||0}件)</div>
+              {(discResult.kyakuPattern||[]).slice(0,20).map((d,i)=>(
+                <div key={i} className="hist-item">
+                  <div style={{fontSize:'13px',fontWeight:'700'}}>{d.desc}</div>
+                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+                    試行{d.trials}回 | 勝者脚質「{d.winnerKyaku}」 {d.rate}%
+                  </div>
+                  <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}}
+                    onClick={async()=>{
+                      await dbPut('signConditions',{
+                        conditionType:'KYAKU_PATTERN',pattern:d.pattern,
+                        winnerKyaku:d.winnerKyaku,rate:d.rate,trials:d.trials,
+                        description:d.desc,active:true,
+                      });reload();alert('追加しました');
+                    }}>条件として追加</button>
+                </div>
+              ))}
+              {(discResult.courseLink||[]).length===0&&(discResult.kyakuPattern||[]).length===0&&
+               (discResult.venueSyaban||[]).length===0&&(discResult.kyakuSyaban||[]).length===0&&
+                <div className="empty">該当パターンなし (データ蓄積を増やしてください)</div>
+              }
+            </div>
+          )}
+        </div>
+      )}
+
+      {signConditions.map(c=>{
+        const p=players.find(pp=>String(pp.regNo)===String(c.regNo));
+        const typ=COND_TYPES.find(t=>t.value===c.conditionType);
+        return(
+          <div key={c.id} className="hist-item" style={{opacity:c.active?1:0.5}}>
+            <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
+              <span style={{fontSize:'15px'}}>{typ?.emoji}</span>
+              <span style={{fontWeight:'700'}}>{typ?.label}</span>
+              {p&&<span style={{fontSize:'12px',color:'var(--text2)'}}>{p.name}</span>}
+              {c.syaban&&<Chip no={c.syaban} size="sm"/>}
+              <span style={{marginLeft:'auto',fontSize:'11px',color:c.active?'var(--green)':'var(--text2)'}}>
+                {c.active?'有効':'無効'}
+              </span>
+            </div>
+            <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+              {c.description||(c.conditionType==='COURSE_LINK'?`${c.venue||'全場'} ${c.syaban}番 ${c.lookback}走前連動`:'')}
+            </div>
+            <div style={{display:'flex',gap:'5px',marginTop:'6px'}}>
+              <button className="btn btn-sm btn-ghost" onClick={()=>toggleActive(c)}>{c.active?'無効化':'有効化'}</button>
+              <button className="btn btn-sm btn-ghost" onClick={()=>setEdit(c)}>編集</button>
+            </div>
+          </div>
+        );
+      })}
+
+      {edit&&(
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',zIndex:1000,display:'flex',alignItems:'flex-end',justifyContent:'center'}}
+          onClick={()=>setEdit(null)}>
+          <div className="card" style={{width:'100%',maxWidth:'500px',margin:'10px',maxHeight:'90vh',overflowY:'auto'}} onClick={e=>e.stopPropagation()}>
+            <div className="card-title">{edit.id?'条件編集':'条件追加'}</div>
+            <div className="field"><label>種類</label>
+              <select className="sel inp" value={edit.conditionType} onChange={e=>setEdit({...edit,conditionType:e.target.value})}>
+                {COND_TYPES.map(t=><option key={t.value} value={t.value}>{t.emoji} {t.label}</option>)}
+              </select>
+              <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+                {COND_TYPES.find(t=>t.value===edit.conditionType)?.desc}
+              </div>
+            </div>
+
+            {(edit.conditionType==='COURSE_LINK'||edit.conditionType==='RACER_SIGN'||edit.conditionType==='LINE_LINK')&&(
+              <div className="field"><label>選手</label>
+                <PlayerSearch players={players} value={edit.regNo} onChange={v=>setEdit({...edit,regNo:v})}/>
+              </div>
+            )}
+
+            {edit.conditionType==='COURSE_LINK'&&(<>
+              <div className="row">
+                <div className="field"><label>車番</label>
+                  <select className="sel inp" value={edit.syaban||''} onChange={e=>setEdit({...edit,syaban:Number(e.target.value)})}>
+                    {[1,2,3,4,5,6,7,8,9].map(n=><option key={n}>{n}</option>)}
+                  </select>
+                </div>
+                <div className="field"><label>X走前</label>
+                  <input className="inp" type="number" value={edit.lookback||3} onChange={e=>setEdit({...edit,lookback:Number(e.target.value)})}/>
+                </div>
+              </div>
+              <div className="field"><label>競輪場 (空欄=全場)</label>
+                <select className="sel inp" value={edit.venue||''} onChange={e=>setEdit({...edit,venue:e.target.value})}>
+                  <option value="">(全場)</option>
+                  {VENUES.map(v=><option key={v}>{v}</option>)}
+                </select>
+              </div>
+            </>)}
+
+            {edit.conditionType==='RACER_SIGN'&&(
+              <div className="field"><label>関連艇 (カンマ区切り)</label>
+                <input className="inp" value={edit.relatedBoats||''} onChange={e=>setEdit({...edit,relatedBoats:e.target.value})} placeholder="例: 1,2"/>
+              </div>
+            )}
+
+            {edit.conditionType==='KYAKU_PATTERN'&&(<>
+              <div className="field"><label>構成パターン</label>
+                <input className="inp" value={edit.pattern||''} onChange={e=>setEdit({...edit,pattern:e.target.value})} placeholder="例: 逃3/両2/追4/9車"/>
+              </div>
+              <div className="field"><label>勝者脚質</label>
+                <select className="sel inp" value={edit.winnerKyaku||''} onChange={e=>setEdit({...edit,winnerKyaku:e.target.value})}>
+                  <option value=""></option><option>逃</option><option>両</option><option>追</option>
+                </select>
+              </div>
+            </>)}
+
+            <div className="field"><label>説明</label>
+              <input className="inp" value={edit.description||''} onChange={e=>setEdit({...edit,description:e.target.value})}/>
+            </div>
+
+            <div style={{display:'flex',gap:'8px'}}>
+              <button className="btn btn-primary" onClick={save} style={{flex:1}}>保存</button>
+              <button className="btn btn-ghost" onClick={()=>setEdit(null)} style={{flex:1}}>キャンセル</button>
+              {edit.id&&<button className="btn btn-danger" onClick={del}>削除</button>}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ====================================================================
+   入力画面 (一括取得 + 当日取得)
+==================================================================== */
+function InputScreen({reload}){
+  const today=new Date().toISOString().slice(0,10);
+  const[fromDate,setFromDate]=useState(()=>{const d=new Date();d.setDate(d.getDate()-7);return d.toISOString().slice(0,10);});
+  const[toDate,setToDate]=useState(today);
+  const[selectedVenues,setSelectedVenues]=useState([]);
+  const[job,setJob]=useState(null);
+  const[stats,setStats]=useState(null);
+
+  useEffect(()=>{
+    const load=async()=>{
+      try{
+        const r=await fetch(`${_serverBase}/api/stats`);
+        const d=await r.json();
+        if(d.ok) setStats(d);
+      }catch(e){}
+    };
+    load();
+  },[job?.status]);
+
+  const startBulk=async()=>{
+    try{
+      const r=await fetch(`${_serverBase}/api/bulk_fetch`,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({date_from:fromDate,date_to:toDate,venues:selectedVenues.length>0?selectedVenues:null})
+      });
+      const d=await r.json();
+      if(!d.ok) return alert('開始失敗: '+(d.error||''));
+      const jid=d.jobId;
+      pollJob(jid);
+    }catch(e){alert('エラー: '+e.message);}
+  };
+
+  const startToday=async()=>{
+    try{
+      const r=await fetch(`${_serverBase}/api/today_fetch`,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({date:today})
+      });
+      const d=await r.json();
+      if(!d.ok) return alert('開始失敗');
+      pollJob(d.jobId);
+    }catch(e){alert('エラー: '+e.message);}
+  };
+
+  const pollJob=async(jid)=>{
+    setJob({id:jid,status:'pending'});
+    const interval=setInterval(async()=>{
+      try{
+        const r=await fetch(`${_serverBase}/api/job/${jid}`);
+        const d=await r.json();
+        if(d.ok){
+          setJob({id:jid,...d});
+          if(d.status==='done'||d.status==='error'){
+            clearInterval(interval);
+            reload();
+          }
+        }
+      }catch(e){clearInterval(interval);}
+    },1500);
+  };
+
+  const toggleVenue=v=>{
+    setSelectedVenues(prev=>prev.includes(v)?prev.filter(x=>x!==v):[...prev,v]);
+  };
+
+  return(
+    <div>
+      {stats&&(
+        <div className="card">
+          <div className="card-title">蓄積データ</div>
+          <div style={{display:'flex',gap:'12px',flexWrap:'wrap',fontSize:'13px'}}>
+            <div><span style={{color:'var(--text2)',fontSize:'11px'}}>総レース</span><br/><strong style={{fontSize:'18px'}}>{stats.total_races}</strong></div>
+            <div><span style={{color:'var(--text2)',fontSize:'11px'}}>結果あり</span><br/><strong style={{fontSize:'18px',color:'var(--green)'}}>{stats.with_result}</strong></div>
+            <div><span style={{color:'var(--text2)',fontSize:'11px'}}>選手数</span><br/><strong style={{fontSize:'18px'}}>{stats.total_players}</strong></div>
+            <div><span style={{color:'var(--text2)',fontSize:'11px'}}>期間</span><br/><strong style={{fontSize:'12px'}}>{stats.date_from||'-'}<br/>{stats.date_to||'-'}</strong></div>
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="card-title">当日のレース取得</div>
+        <p style={{fontSize:'12px',color:'var(--text2)',marginBottom:'10px'}}>
+          本日({today})開催全競輪場の出走表と結果を一括取得します。
+        </p>
+        <button className="btn btn-success" onClick={startToday} disabled={!!job&&job.status==='running'} style={{width:'100%'}}>
+          📥 本日の全レースを取得
+        </button>
+      </div>
+
+      <div className="card">
+        <div className="card-title">過去レース一括取得</div>
+        <div className="row">
+          <div className="field"><label>開始日</label><input type="date" className="inp" value={fromDate} onChange={e=>setFromDate(e.target.value)}/></div>
+          <div className="field"><label>終了日</label><input type="date" className="inp" value={toDate} onChange={e=>setToDate(e.target.value)}/></div>
+        </div>
+        <div style={{marginTop:'10px'}}>
+          <div style={{fontSize:'12px',color:'var(--text2)',marginBottom:'6px'}}>競輪場フィルタ (空=全場)</div>
+          <div style={{display:'flex',gap:'5px',flexWrap:'wrap',maxHeight:'140px',overflowY:'auto'}}>
+            {VENUES.map(v=>(
+              <button key={v} className={`btn btn-sm ${selectedVenues.includes(v)?'btn-primary':'btn-ghost'}`}
+                onClick={()=>toggleVenue(v)} style={{padding:'4px 8px',fontSize:'11px'}}>{v}</button>
+            ))}
+          </div>
+          {selectedVenues.length>0&&
+            <button className="btn btn-sm btn-ghost" style={{marginTop:'5px'}} onClick={()=>setSelectedVenues([])}>クリア</button>
+          }
+        </div>
+        <button className="btn btn-primary" onClick={startBulk} disabled={!!job&&job.status==='running'} style={{width:'100%',marginTop:'12px'}}>
+          📥 取得開始
+        </button>
+      </div>
+
+      {job&&(
+        <div className="card">
+          <div className="card-title">ジョブ状態</div>
+          <div style={{fontSize:'13px'}}>
+            <div>状態: <strong style={{color:job.status==='done'?'var(--green)':job.status==='error'?'var(--red)':'var(--accent)'}}>{job.status}</strong></div>
+            <div>処理済: {job.done||0}{job.total?` / ${job.total}`:''}</div>
+            <div>保存: <strong style={{color:'var(--green)'}}>{job.saved||0}</strong></div>
+            <div>スキップ: {job.skipped||0}</div>
+            <div>エラー: {job.errors||0}</div>
+            {job.total_days&&<div>日数: {job.total_days}</div>}
+            {job.error_msg&&<div style={{color:'var(--red)'}}>{job.error_msg}</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ====================================================================
+   本日のレース判定画面
+==================================================================== */
+function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
+  const today=new Date().toISOString().slice(0,10);
+  const analyzed=useMemo(()=>{
+    const todayRaces=raceResults.filter(r=>r.date===today);
+    return todayRaces.map(r=>{
+      const {alerts,linked,tickets}=runAnalysis({
+        entries:r.entries||[],raceResults,signConditions,players,discoveries,venue:r.venue
+      });
+      const withResult=alerts.map(a=>{
+        const top3=[r.result1,r.result2,r.result3].filter(v=>v!=null).map(Number);
+        const connected=top3.length>0?top3.includes(Number(a.syaban)):null;
+        return{...a,connected};
+      });
+      return{...r,alerts:withResult,linked,tickets};
+    }).filter(r=>r.alerts.length>0).sort((a,b)=>(a.venue||'').localeCompare(b.venue)||a.raceNo-b.raceNo);
+  },[raceResults,signConditions,players,discoveries,today]);
+
+  const confirmed=analyzed.flatMap(r=>r.alerts.filter(a=>a.connected!==null));
+  const hits=confirmed.filter(a=>a.connected===true).length;
+
+  if(analyzed.length===0) return(
+    <div className="card" style={{textAlign:'center',padding:'44px 20px'}}>
+      <div style={{fontSize:'44px',marginBottom:'14px'}}>🚴</div>
+      <div style={{fontWeight:'700',marginBottom:'8px'}}>本日のサインレースなし</div>
+      <div style={{color:'var(--text2)',fontSize:'12px'}}>「入力」タブで本日のレースを取得し、<br/>「サイン条件」を登録してください</div>
+    </div>
+  );
+
+  return(
+    <div>
+      {confirmed.length>0&&(
+        <div className="card" style={{textAlign:'center',padding:'16px',
+          border:`2px solid ${hits/confirmed.length>=0.5?'var(--green)':'var(--border)'}`}}>
+          <div style={{fontSize:'12px',color:'var(--text2)',marginBottom:'6px',fontWeight:'600',textTransform:'uppercase'}}>本日の連動率</div>
+          <div style={{fontSize:'32px',fontWeight:'900',color:hits/confirmed.length>=0.5?'var(--green)':'var(--red)'}}>
+            {hits}<span style={{fontSize:'18px',color:'var(--text2)'}}>/{confirmed.length}</span>
+            <span style={{fontSize:'16px',marginLeft:'8px'}}>{Math.round(hits/confirmed.length*100)}%</span>
+          </div>
+        </div>
+      )}
+      {analyzed.map((race,i)=>{
+        const hasResult=race.result1!=null;
+        const linkedHit=race.alerts.some(a=>a.connected===true);
+        const borderColor=hasResult?(linkedHit?'var(--green)':'var(--red)'):'var(--border)';
+        return(
+          <div key={i} className="card" style={{borderColor,borderWidth:'2px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px',flexWrap:'wrap'}}>
+              <span style={{fontWeight:'900',fontSize:'16px'}}>{race.venue}</span>
+              <span style={{fontWeight:'800',fontSize:'13px',color:'var(--accent)',background:'var(--bg3)',borderRadius:'6px',padding:'2px 8px'}}>{race.raceNo}R</span>
+              {race.grade&&<span className={`grade-cls ${race.grade.startsWith('S')?'s':race.grade.startsWith('A')?'a':'c'}`}>{race.grade}</span>}
+              {hasResult?(
+                <>
+                  <span style={{marginLeft:'auto',fontSize:'12px',color:'var(--text2)'}}>
+                    結果 <strong style={{color:'var(--text)',fontSize:'14px'}}>{race.result1}-{race.result2}-{race.result3}</strong>
+                  </span>
+                  <span style={{fontWeight:'900',fontSize:'13px',color:linkedHit?'var(--green)':'var(--red)'}}>
+                    {linkedHit?'✅ 連動':'❌ 不発'}
+                  </span>
+                </>
+              ):(
+                <span style={{marginLeft:'auto',fontSize:'12px',color:'var(--yellow)',fontWeight:'700'}}>⏳ 結果待ち</span>
+              )}
+            </div>
+            {race.alerts.map((a,j)=>{
+              let bg='rgba(160,106,10,0.07)', bdr='var(--yellow)';
+              if(a.connected===true){bg='rgba(58,122,42,0.09)';bdr='var(--green)';}
+              if(a.connected===false){bg='rgba(187,34,0,0.07)';bdr='var(--red)';}
+              return(
+                <div key={j} style={{padding:'9px 11px',borderRadius:'8px',marginBottom:'6px',background:bg,border:`1px solid ${bdr}`}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                    {a.syaban&&<Chip no={a.syaban} size="sm"/>}
+                    <span style={{fontWeight:'800',fontSize:'13px'}}>{a.pName}</span>
+                    {a.connected===true&&<span style={{color:'var(--green)',fontWeight:'800',fontSize:'12px'}}>✅</span>}
+                    {a.connected===false&&<span style={{color:'var(--red)',fontWeight:'800',fontSize:'12px'}}>❌</span>}
+                  </div>
+                  {a.desc&&<div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>{a.desc}</div>}
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ====================================================================
+   設定画面
+==================================================================== */
+function SettingsScreen({connected,reload}){
+  const[stats,setStats]=useState(null);
+  useEffect(()=>{
+    fetch(`${_serverBase}/api/stats`).then(r=>r.json()).then(d=>{if(d.ok)setStats(d);}).catch(()=>{});
+  },[]);
+
+  const autoRegister=async()=>{
+    try{
+      const r=await fetch(`${_serverBase}/api/auto_register`,{method:'POST'});
+      const d=await r.json();
+      alert(`選手を${d.added}名追加しました`);
+      reload();
+    }catch(e){alert('失敗: '+e.message);}
+  };
+
+  return(
+    <div>
+      <div className="card">
+        <div className="card-title">接続状態</div>
+        <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+          <span style={{width:'10px',height:'10px',borderRadius:'50%',background:connected?'var(--green)':'var(--red)'}}/>
+          <span>{connected?'サーバー接続中 (SQLite)':'ローカルモード (IndexedDB)'}</span>
+        </div>
+        {!connected&&<div style={{fontSize:'12px',color:'var(--text2)',marginTop:'8px'}}>
+          サーバー(start_server.command)が起動していません。スクレイピング機能と一括処理が使えません。
+        </div>}
+      </div>
+      <div className="card">
+        <div className="card-title">データ統計</div>
+        {stats?(
+          <div style={{fontSize:'13px',lineHeight:'2'}}>
+            <div>総レース数: <strong>{stats.total_races}</strong></div>
+            <div>結果ありレース: <strong>{stats.with_result}</strong></div>
+            <div>選手数: <strong>{stats.total_players}</strong></div>
+            <div>期間: <strong>{stats.date_from||'-'}〜{stats.date_to||'-'}</strong></div>
+          </div>
+        ):<div className="empty">統計取得中...</div>}
+        <button className="btn btn-primary btn-sm" style={{marginTop:'10px'}} onClick={autoRegister}>
+          蓄積レースから選手DBを自動更新
+        </button>
+      </div>
+      <div className="card">
+        <div className="card-title">アプリ情報</div>
+        <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
+          競輪サイン予想 v0.1<br/>
+          データソース: KEIRIN.JP<br/>
+          サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ====================================================================
+   メインApp
+==================================================================== */
+function App(){
+  const[tab,setTab]=useState('today');
+  const[players,setPlayers]=useState([]);
+  const[raceResults,setRaceResults]=useState([]);
+  const[signConditions,setSignConditions]=useState([]);
+  const[discoveries,setDiscoveries]=useState([]);
+  const[connected,setConnected]=useState(false);
+  const[loaded,setLoaded]=useState(false);
+
+  const reload=useCallback(async()=>{
+    const[p,r,s,d]=await Promise.all([
+      dbAll('players'),dbAll('raceResults'),dbAll('signConditions'),dbAll('discoveries')
+    ]);
+    setPlayers(p); setRaceResults(r); setSignConditions(s); setDiscoveries(d);
+  },[]);
+
+  useEffect(()=>{
+    initStorage().then(m=>{
+      setConnected(m==='local');
+      reload().then(()=>setLoaded(true));
+    });
+  },[reload]);
+
+  if(!loaded) return(
+    <div style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100vh',color:'var(--text2)'}}>
+      <div style={{textAlign:'center'}}>
+        <div style={{fontSize:'40px',marginBottom:'14px'}}>🚴</div>
+        <div>読み込み中...</div>
+      </div>
+    </div>
+  );
+
+  const tabs=[
+    {id:'today',icon:'📋',label:'本日'},
+    {id:'race',icon:'🔬',label:'予想'},
+    {id:'input',icon:'📥',label:'入力'},
+    {id:'sign',icon:'🌟',label:'サイン'},
+    {id:'players',icon:'🚴',label:'選手'},
+    {id:'settings',icon:'⚙️',label:'設定'},
+  ];
+
+  return(
+    <div className="app">
+      <div className="header">
+        <h1>競輪サイン予想</h1>
+        <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
+      </div>
+      <div className="content">
+        {tab==='today'&&<TodayRacesScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
+        {tab==='race'&&<TodayScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries} reload={reload}/>}
+        {tab==='input'&&<InputScreen reload={reload}/>}
+        {tab==='sign'&&<SignConditionsScreen players={players} signConditions={signConditions} discoveries={discoveries} raceResults={raceResults} reload={reload}/>}
+        {tab==='players'&&<PlayersScreen players={players} reload={reload}/>}
+        {tab==='settings'&&<SettingsScreen connected={connected} reload={reload}/>}
+      </div>
+      <div className="tab-bar">
+        {tabs.map(t=>(
+          <button key={t.id} className={`tab ${tab===t.id?'active':''}`} onClick={()=>setTab(t.id)}>
+            <span className="icon">{t.icon}</span>
+            <span>{t.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
