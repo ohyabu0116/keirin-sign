@@ -1468,7 +1468,7 @@ function ExampleList({examples,misses}){
   );
 }
 
-function SignConditionsScreen({players,signConditions,discoveries,reload,raceResults}){
+function SignConditionsScreen({players,signConditions,discoveries=[],reload,raceResults}){
   const[edit,setEdit]=useState(null);
   const[showDiscover,setShowDiscover]=useState(false);
   const[discResult,setDiscResult]=useState(null);
@@ -1675,10 +1675,11 @@ function SignConditionsScreen({players,signConditions,discoveries,reload,raceRes
         const p=players.find(pp=>String(pp.regNo)===String(c.regNo));
         const typ=COND_TYPES.find(t=>t.value===c.conditionType);
         return(
-          <div key={c.id} className="hist-item" style={{opacity:c.active?1:0.5}}>
+          <div key={'c'+c.id} className="hist-item" style={{opacity:c.active?1:0.5}}>
             <div style={{display:'flex',alignItems:'center',gap:'6px'}}>
               <span style={{fontSize:'15px'}}>{typ?.emoji}</span>
               <span style={{fontWeight:'700'}}>{typ?.label}</span>
+              <span className="badge badge-info" style={{fontSize:'10px'}}>✋手動</span>
               {p&&<span style={{fontSize:'12px',color:'var(--text2)'}}>{p.name}</span>}
               {c.syaban&&<Chip no={c.syaban} size="sm"/>}
               <span style={{marginLeft:'auto',fontSize:'11px',color:c.active?'var(--green)':'var(--text2)'}}>
@@ -1695,6 +1696,47 @@ function SignConditionsScreen({players,signConditions,discoveries,reload,raceRes
           </div>
         );
       })}
+
+      {discoveries.length>0&&(
+        <div style={{marginTop:'18px'}}>
+          <div className="section-title">🔬 採用済み自動発見サイン ({discoveries.length}件)</div>
+          {discoveries.map(d=>{
+            const isActive=d.active!==false;
+            const typ=COND_TYPES.find(t=>t.value===d.type);
+            return(
+              <div key={'d'+d.id} className="hist-item" style={{opacity:isActive?1:0.5,borderColor:isActive?'var(--accent)':'var(--border)'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'6px',flexWrap:'wrap'}}>
+                  <span style={{fontSize:'15px'}}>{typ?.emoji||'🔬'}</span>
+                  <span style={{fontWeight:'700',fontSize:'12px'}}>{typ?.label||d.type}</span>
+                  <span className="badge badge-info" style={{fontSize:'10px',background:'rgba(184,101,26,0.1)',color:'var(--accent)',borderColor:'var(--accent)'}}>🔬自動</span>
+                  {d.syaban&&<Chip no={d.syaban} size="sm"/>}
+                  {d.linkedSyaban&&<><span style={{color:'var(--text2)'}}>→</span><Chip no={d.linkedSyaban} size="sm"/></>}
+                  {Array.isArray(d.linkedPair)&&<>
+                    <span style={{color:'var(--text2)'}}>→</span>
+                    <Chip no={d.linkedPair[0]} size="sm"/>+<Chip no={d.linkedPair[1]} size="sm"/>
+                  </>}
+                  <span style={{marginLeft:'auto',fontSize:'11px',fontWeight:'700',color:'var(--green)'}}>{d.rate}%</span>
+                </div>
+                <div style={{fontSize:'12px',marginTop:'5px'}}>{d.playerName||d.desc}</div>
+                <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+                  試行 {d.trials} 回
+                  {d.adoptedAt&&` / 採用 ${new Date(d.adoptedAt).toLocaleDateString('ja-JP')}`}
+                </div>
+                <ExampleList examples={d.examples} misses={d.misses}/>
+                <div style={{display:'flex',gap:'5px',marginTop:'6px'}}>
+                  <button className="btn btn-sm btn-ghost" onClick={async()=>{
+                    await dbPut('discoveries',{...d,active:!isActive});reload();
+                  }}>{isActive?'無効化':'有効化'}</button>
+                  <button className="btn btn-sm btn-danger" onClick={async()=>{
+                    if(!confirm('採用解除（削除）しますか?'))return;
+                    await dbDel('discoveries',d.id);reload();
+                  }}>採用解除</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {edit&&(
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',zIndex:1000,display:'flex',alignItems:'flex-end',justifyContent:'center'}}
@@ -2232,13 +2274,20 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
   const totalWith=tally.reduce((s,t)=>s+t.withResult,0);
   const totalConn=tally.reduce((s,t)=>s+t.connectedCount,0);
 
-  if(tally.length===0)return(
+  // 該当なし採用サイン (今日に出ていない/該当しないもの)
+  const activeSigns=[
+    ...signConditions.filter(c=>c.active),
+    ...discoveries.filter(d=>d.active!==false),
+  ];
+  const usedIds=new Set(tally.map(t=>(t.sign.id||0)));
+  const notMatched=activeSigns.filter(s=>!usedIds.has(s.id||0));
+
+  if(tally.length===0&&activeSigns.length===0)return(
     <div className="card" style={{textAlign:'center',padding:'40px 20px'}}>
       <div style={{fontSize:'40px',marginBottom:'10px'}}>📊</div>
-      <div style={{fontWeight:'700'}}>採用サインの該当レースなし</div>
+      <div style={{fontWeight:'700'}}>採用サインなし</div>
       <div style={{color:'var(--text2)',fontSize:'12px',marginTop:'8px'}}>
-        「サイン」タブで自動マイニング→採用ボタン<br/>
-        または「入力」タブで本日のレースを取得してください
+        「サイン」タブで自動マイニング→「採用」を押してください
       </div>
     </div>
   );
@@ -2263,6 +2312,14 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
         </div>
       )}
 
+      {tally.length===0&&todayRaces.length===0&&(
+        <div className="card" style={{textAlign:'center',padding:'18px',background:'rgba(160,106,10,0.05)',border:'1px dashed var(--yellow)'}}>
+          <div style={{fontSize:'13px',fontWeight:'700',color:'var(--yellow)'}}>本日のレースデータ未取得</div>
+          <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>「入力」タブで「本日の全レースを取得」してください</div>
+        </div>
+      )}
+
+      {tally.length>0&&<div className="section-title" style={{marginTop:'10px'}}>本日該当のサイン</div>}
       {tally.map((t,i)=>{
         const hitRate=t.withResult>0?Math.round(t.connectedCount/t.withResult*100):null;
         const borderColor=hitRate==null?'var(--border)':(hitRate>=50?'var(--green)':'var(--red)');
@@ -2308,6 +2365,22 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
           </div>
         );
       })}
+
+      {notMatched.length>0&&(
+        <>
+          <div className="section-title" style={{marginTop:'18px'}}>本日該当なし ({notMatched.length}件)</div>
+          {notMatched.map((s,i)=>(
+            <div key={'nm'+i} className="hist-item" style={{opacity:0.7}}>
+              <div style={{display:'flex',alignItems:'center',gap:'6px',flexWrap:'wrap'}}>
+                <span style={{fontSize:'13px'}}>{s.type||s.conditionType?'🔬':'✋'}</span>
+                <span style={{fontSize:'12px',fontWeight:'700',flex:1}}>{s.desc||s.description||s.type||s.conditionType}</span>
+                <span style={{fontSize:'10px',color:'var(--text2)'}}>該当レース無し</span>
+              </div>
+              {s.rate&&<div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>過去 試行{s.trials}回 / 連動{s.rate}%</div>}
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
