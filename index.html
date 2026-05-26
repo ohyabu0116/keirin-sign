@@ -4209,6 +4209,78 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
     load();
   },[]);
 
+  const exportData=async()=>{
+    const stores=['players','raceResults','signConditions','discoveries','predictionLogs'];
+    const data={};
+    let totalRecords=0;
+    for(const s of stores){
+      try{
+        const rows=await dbAll(s);
+        data[s]=rows;
+        totalRecords+=rows.length;
+      }catch(e){data[s]=[];}
+    }
+    data._exportedAt=new Date().toISOString();
+    data._version='1.5';
+    const json=JSON.stringify(data);
+    const blob=new Blob([json],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`keirin-data-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},100);
+    alert(`✓ エクスポート完了\n総レコード: ${totalRecords}件\nファイルサイズ: ${(blob.size/1024/1024).toFixed(1)}MB\n\nこのファイルを他端末に転送 (AirDrop/Drive等) して「インポート」してください`);
+  };
+
+  const importData=async()=>{
+    const input=document.createElement('input');
+    input.type='file';
+    input.accept='.json,application/json';
+    input.onchange=async(e)=>{
+      const file=e.target.files[0];
+      if(!file)return;
+      try{
+        const text=await file.text();
+        const data=JSON.parse(text);
+        const stores=['players','raceResults','signConditions','discoveries','predictionLogs'];
+        const counts={};
+        if(!confirm(`このファイルから取り込みます:\n${stores.map(s=>`${s}: ${(data[s]||[]).length}件`).join('\n')}\n\n既存データは保持され、重複は上書きされます。続行しますか?`))return;
+        for(const s of stores){
+          const records=data[s]||[];
+          counts[s]=0;
+          for(const r of records){
+            try{
+              const{id,...rest}=r;
+              await dbPut(s,rest);  // id除外で上書き処理に任せる
+              counts[s]++;
+            }catch(e){console.warn('import skip:',s,e.message);}
+          }
+        }
+        alert(`✓ インポート完了\n${stores.map(s=>`${s}: ${counts[s]}件`).join('\n')}`);
+        await reload();
+      }catch(e){
+        alert('インポート失敗: '+e.message);
+      }
+    };
+    input.click();
+  };
+
+  const resetAndReseed=async()=>{
+    if(!confirm('現在の全データを削除して、GitHubの初期データから再ロードします。\n本当に実行しますか? (元に戻せません)'))return;
+    const db=await _getIDB();
+    const stores=['players','raceResults','signConditions','discoveries','predictionLogs'];
+    for(const s of stores){
+      await new Promise((res,rej)=>{
+        const t=db.transaction(s,'readwrite');
+        const r=t.objectStore(s).clear();
+        r.onsuccess=()=>res();r.onerror=()=>rej(r.error);
+      });
+    }
+    alert('クリア完了。ページをリロードします。');
+    location.reload();
+  };
+
   const dedupDB=async()=>{
     const races=await dbAll('raceResults');
     const byKey={};
@@ -4278,6 +4350,23 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
 
   return(
     <div>
+      <div className="card" style={{borderColor:'var(--accent)',borderWidth:'2px'}}>
+        <div className="card-title" style={{color:'var(--accent)'}}>📲 データの引き継ぎ (端末間共有)</div>
+        <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
+          IndexedDBは端末ごとに独立しています。PCで蓄積したデータをスマホでも使うには、エクスポートしたファイルを転送して(AirDrop/Drive/メール等)、スマホでインポートしてください。
+        </p>
+        <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+          <button className="btn btn-primary btn-sm" onClick={exportData}>📤 エクスポート (DLする)</button>
+          <button className="btn btn-success btn-sm" onClick={importData}>📥 インポート (取り込む)</button>
+          <button className="btn btn-danger btn-sm" onClick={resetAndReseed}>♻️ 全消去して初期データから</button>
+        </div>
+        <div style={{fontSize:'10px',color:'var(--text2)',marginTop:'8px',lineHeight:'1.5'}}>
+          📤 全データをJSONファイルとしてダウンロード<br/>
+          📥 ファイルから取り込む (既存データは保持・重複は上書き)<br/>
+          ♻️ 全削除してGitHub上の初期データ (5424レース) から再ロード
+        </div>
+      </div>
+
       <div className="card">
         <div className="card-title">自動取得</div>
         <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
@@ -4331,7 +4420,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v1.4<br/>
+          競輪サイン予想 v1.5<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -4450,7 +4539,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.4</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.5</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
