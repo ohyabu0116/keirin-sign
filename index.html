@@ -436,27 +436,30 @@ function permutations(arr,r){
 /* ====================================================================
    クライアントサイド マイニング (サーバーなしでも動作)
 ==================================================================== */
-// サインの一意キーを生成
+// サインの一意キーを生成 (データ型ゆれにも対応)
 function signKey(s){
-  const type=s.type||s.conditionType||'';
-  const reg=s.regNo||'';
-  const sy=s.syaban||'';
-  if(type==='PLAYER_SYABAN_LINK')return `PSL|${reg}|${sy}|${s.linkedSyaban||''}`;
-  if(type==='PLAYER_SYABAN_PAIR_LINK'){
-    const pair=Array.isArray(s.linkedPair)?[...s.linkedPair].sort((a,b)=>a-b).join(','):(s.linkedPair||'');
-    return `PSPL|${reg}|${sy}|${pair}`;
-  }
+  const norm=(v)=>v==null?'':String(v).trim();
+  const normN=(v)=>{const n=parseInt(v);return isNaN(n)?'':String(n);};
+  const normPair=(v)=>{
+    if(Array.isArray(v))return v.map(normN).filter(Boolean).sort((a,b)=>Number(a)-Number(b)).join(',');
+    if(typeof v==='string')return v.split(/[,\-=]/).map(normN).filter(Boolean).sort((a,b)=>Number(a)-Number(b)).join(',');
+    return '';
+  };
+  const type=norm(s.type||s.conditionType);
+  const reg=norm(s.regNo).padStart(6,'0');
+  const sy=normN(s.syaban);
+  if(type==='PLAYER_SYABAN_LINK')return `PSL|${reg}|${sy}|${normN(s.linkedSyaban)}`;
+  if(type==='PLAYER_SYABAN_PAIR_LINK')return `PSPL|${reg}|${sy}|${normPair(s.linkedPair)}`;
   if(type==='PLAYER_COMBO_LINK'){
-    const ab=[s.regA,s.regB].sort().join('+');
-    return `PCL|${ab}|${s.syaA}|${s.syaB}|${s.linkedSyaban||''}`;
+    const ab=[norm(s.regA).padStart(6,'0'),norm(s.regB).padStart(6,'0')].sort().join('+');
+    return `PCL|${ab}|${normN(s.syaA)}|${normN(s.syaB)}|${normN(s.linkedSyaban)}`;
   }
   if(type==='PLAYER_COMBO_PAIR_LINK'){
-    const ab=[s.regA,s.regB].sort().join('+');
-    const pair=Array.isArray(s.linkedPair)?[...s.linkedPair].sort((a,b)=>a-b).join(','):'';
-    return `PCPL|${ab}|${s.syaA}|${s.syaB}|${pair}`;
+    const ab=[norm(s.regA).padStart(6,'0'),norm(s.regB).padStart(6,'0')].sort().join('+');
+    return `PCPL|${ab}|${normN(s.syaA)}|${normN(s.syaB)}|${normPair(s.linkedPair)}`;
   }
-  if(type==='COURSE_LINK')return `CL|${reg}|${s.venue||''}|${sy}|${s.lookback||3}`;
-  if(type==='KYAKU_PATTERN')return `KP|${s.pattern}|${s.winnerKyaku}`;
+  if(type==='COURSE_LINK')return `CL|${reg}|${norm(s.venue)}|${sy}|${normN(s.lookback)||'3'}`;
+  if(type==='KYAKU_PATTERN')return `KP|${norm(s.pattern)}|${norm(s.winnerKyaku)}`;
   return `${type}|${reg}|${sy}`;
 }
 
@@ -3569,7 +3572,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想</h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v0.7</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       <div className="content">
