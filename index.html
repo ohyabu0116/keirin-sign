@@ -144,10 +144,10 @@ const IDB_NAME='KeirinSignDB';
 function _getIDB(){
   if(_idb) return Promise.resolve(_idb);
   return new Promise((res,rej)=>{
-    const r=indexedDB.open(IDB_NAME,2);
+    const r=indexedDB.open(IDB_NAME,3);
     r.onupgradeneeded=e=>{
       const d=e.target.result;
-      ['players','raceResults','signConditions','signTracking','discoveries'].forEach(n=>{
+      ['players','raceResults','signConditions','signTracking','discoveries','predictionLogs'].forEach(n=>{
         if(!d.objectStoreNames.contains(n)){
           d.createObjectStore(n,{keyPath:'id',autoIncrement:true});
         }
@@ -2105,6 +2105,7 @@ function InputScreen({reload}){
 ==================================================================== */
 function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
   const today=new Date().toISOString().slice(0,10);
+  const[shareHandle,setShareHandle]=useState(()=>localStorage.getItem('keirinSignHandle')||'@your_handle');
   const analyzed=useMemo(()=>{
     const todayRaces=dedupRaces(raceResults.filter(r=>r.date===today));
     return todayRaces.map(r=>{
@@ -2123,6 +2124,97 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
   const confirmed=analyzed.flatMap(r=>r.alerts.filter(a=>a.connected!==null));
   const hits=confirmed.filter(a=>a.connected===true).length;
 
+  // 過去30日トータル成績 (フッター用)
+  const allHistMap=useMemo(()=>{
+    const allSigns=[
+      ...signConditions.filter(c=>c.active),
+      ...discoveries.filter(d=>d.active!==false),
+    ];
+    return buildSignHitMap(raceResults,allSigns);
+  },[raceResults,signConditions,discoveries]);
+  const lastDays=Object.keys(allHistMap).sort((a,b)=>b.localeCompare(a)).slice(0,30);
+  let allHits=0,allWith=0;
+  lastDays.forEach(d=>{allHits+=allHistMap[d].hits;allWith+=allHistMap[d].withResult;});
+  const allRate=allWith>0?Math.round(allHits/allWith*100):null;
+
+  const exportImage=async()=>{
+    const items=[];
+    analyzed.forEach(r=>{
+      r.alerts.forEach(a=>{
+        const chips=[];
+        if(a.linkedPair&&Array.isArray(a.linkedPair))chips.push(...a.linkedPair);
+        else if(a.linkedSyaban)chips.push(Number(a.linkedSyaban));
+        else if(a.syaban)chips.push(Number(a.syaban));
+        items.push({
+          venue:r.venue, raceNo:r.raceNo, chips,
+          label:a.pName||'',
+          confidence:a.rate||null,
+        });
+      });
+    });
+    if(items.length===0)return alert('サイン該当レースがありません');
+    const dataURL=await generateShareImage({
+      title:'本日の高信頼サイン',
+      date:today,
+      items,
+      footer:allRate!=null?`過去30日 的中率 ${allRate}% (${allHits}/${allWith})`:'',
+      handle:shareHandle,
+    });
+    downloadDataURL(dataURL,`keirin-sign-${today}.png`);
+  };
+
+  const savePrediction=async()=>{
+    // 当日の予想スナップショットを保存 (改竄防止用ハッシュ付き)
+    const snapshot={
+      date:today,
+      savedAt:new Date().toISOString(),
+      races:analyzed.map(r=>({
+        venue:r.venue,raceNo:r.raceNo,grade:r.grade,
+        stTime:r.stTime||'',
+        alerts:r.alerts.map(a=>({
+          type:a.type,pName:a.pName,syaban:a.syaban,
+          linkedSyaban:a.linkedSyaban,linkedPair:a.linkedPair,
+          rate:a.rate,desc:a.desc,
+        })),
+      })),
+    };
+    // SHA-256 hash for tamper evidence
+    const enc=new TextEncoder();
+    const buf=enc.encode(JSON.stringify(snapshot));
+    const digest=await crypto.subtle.digest('SHA-256',buf);
+    const hash=Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+    await dbPut('predictionLogs',{...snapshot,hash});
+    alert(`✓ 予想を記録しました\n${snapshot.races.length}レース ${snapshot.races.reduce((s,r)=>s+r.alerts.length,0)}サイン\n\nハッシュ: ${hash.slice(0,16)}...`);
+  };
+
+  const exportResultImage=async()=>{
+    // 結果が出ているもの中心
+    const items=[];
+    analyzed.forEach(r=>{
+      r.alerts.filter(a=>a.connected!==null).forEach(a=>{
+        const chips=[];
+        if(a.linkedPair&&Array.isArray(a.linkedPair))chips.push(...a.linkedPair);
+        else if(a.linkedSyaban)chips.push(Number(a.linkedSyaban));
+        else if(a.syaban)chips.push(Number(a.syaban));
+        items.push({
+          venue:r.venue, raceNo:r.raceNo, chips,
+          label:`結果 ${r.result1||'?'}-${r.result2||'?'}-${r.result3||'?'} ${a.connected?'✅':'❌'}`,
+          confidence:a.rate||null,
+        });
+      });
+    });
+    if(items.length===0)return alert('結果が出ているサイン該当レースがありません');
+    const todayRate=confirmed.length>0?Math.round(hits/confirmed.length*100):0;
+    const dataURL=await generateShareImage({
+      title:'本日の結果報告',
+      date:today,
+      items,
+      footer:`本日 ${hits}/${confirmed.length} 的中 (${todayRate}%)`,
+      handle:shareHandle,
+    });
+    downloadDataURL(dataURL,`keirin-result-${today}.png`);
+  };
+
   if(analyzed.length===0) return(
     <div className="card" style={{textAlign:'center',padding:'44px 20px'}}>
       <div style={{fontSize:'44px',marginBottom:'14px'}}>🚴</div>
@@ -2133,6 +2225,19 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
 
   return(
     <div>
+      <div className="card">
+        <div style={{display:'flex',gap:'5px',alignItems:'center',flexWrap:'wrap'}}>
+          <input className="inp" style={{flex:1,minWidth:'140px',fontSize:'13px'}} value={shareHandle}
+            onChange={e=>{setShareHandle(e.target.value);localStorage.setItem('keirinSignHandle',e.target.value);}}
+            placeholder="@your_handle (Xアカウント)"/>
+          <button className="btn btn-primary btn-sm" onClick={exportImage}>📸 予想画像</button>
+          <button className="btn btn-ghost btn-sm" onClick={exportResultImage}>🏆 結果画像</button>
+          <button className="btn btn-success btn-sm" onClick={savePrediction}>💾 予想を記録</button>
+        </div>
+        <div style={{fontSize:'10px',color:'var(--text2)',marginTop:'5px'}}>
+          📸 X投稿用1080×1350画像 / 💾 ハッシュ付き予想記録 (後出し否定の証拠)
+        </div>
+      </div>
       {confirmed.length>0&&(
         <div className="card" style={{textAlign:'center',padding:'16px',
           border:`2px solid ${hits/confirmed.length>=0.5?'var(--green)':'var(--border)'}`}}>
@@ -2386,6 +2491,377 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
 }
 
 /* ====================================================================
+   配信用画像生成 (Canvas2D)
+==================================================================== */
+const CHIP_COLORS={1:['#ffffff','#000'],2:['#111','#fff'],3:['#dd0000','#fff'],4:['#1155cc','#fff'],
+  5:['#f5c518','#111'],6:['#1aaa55','#fff'],7:['#ff5e15','#fff'],8:['#e870c0','#fff'],9:['#7a5cd9','#fff']};
+
+function drawChip(ctx,x,y,size,no){
+  const[bg,fg]=CHIP_COLORS[no]||['#888','#fff'];
+  ctx.fillStyle=bg;
+  ctx.fillRect(x,y,size,size);
+  if(bg==='#ffffff'){ctx.strokeStyle='#999';ctx.lineWidth=1;ctx.strokeRect(x+0.5,y+0.5,size-1,size-1);}
+  ctx.fillStyle=fg;
+  ctx.font=`bold ${Math.floor(size*0.65)}px Arial, sans-serif`;
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  ctx.fillText(String(no),x+size/2,y+size/2+2);
+}
+
+async function generateShareImage(opts){
+  /* opts: {
+       title: '本日のサイン高信頼予想',
+       date: '2026-05-26',
+       items: [{venue, raceNo, label, chips:[1,2,...], confidence: 95}, ...],
+       footer: '過去30日 的中率 68% (87/124)',
+       handle: '@your_handle',
+     }
+     return: dataURL of PNG */
+  const W=1080,H=1350;
+  const cv=document.createElement('canvas');
+  cv.width=W;cv.height=H;
+  const ctx=cv.getContext('2d');
+
+  // 背景
+  ctx.fillStyle='#fffdf8';
+  ctx.fillRect(0,0,W,H);
+
+  // ヘッダー
+  ctx.fillStyle='#b8651a';
+  ctx.fillRect(0,0,W,120);
+  ctx.fillStyle='#fff';
+  ctx.font='bold 44px "Hiragino Sans","Noto Sans JP",sans-serif';
+  ctx.textAlign='left';
+  ctx.textBaseline='middle';
+  ctx.fillText('🚴 競輪サイン予想',40,60);
+  ctx.font='28px "Hiragino Sans",sans-serif';
+  ctx.fillText(opts.date||'',40,100);
+
+  // タイトル
+  ctx.fillStyle='#2a1f10';
+  ctx.font='bold 38px "Hiragino Sans",sans-serif';
+  ctx.fillText(opts.title||'本日のサイン',40,170);
+  ctx.font='24px "Hiragino Sans",sans-serif';
+  ctx.fillStyle='#6b5530';
+  ctx.fillText(`${(opts.items||[]).length}件 検出`,40,210);
+
+  // 区切り線
+  ctx.strokeStyle='#c8b89c';
+  ctx.lineWidth=2;
+  ctx.beginPath();ctx.moveTo(40,240);ctx.lineTo(W-40,240);ctx.stroke();
+
+  // アイテム描画 (最大10件)
+  const items=(opts.items||[]).slice(0,10);
+  let y=270;
+  const cardH=88;
+  items.forEach((item,i)=>{
+    // カード背景
+    ctx.fillStyle=item.confidence>=90?'rgba(58,122,42,0.08)':'rgba(160,106,10,0.06)';
+    ctx.fillRect(40,y,W-80,cardH-12);
+    ctx.strokeStyle=item.confidence>=90?'#3a7a2a':'#a06a0a';
+    ctx.lineWidth=2;
+    ctx.strokeRect(40,y,W-80,cardH-12);
+
+    // 会場・R番号
+    ctx.fillStyle='#2a1f10';
+    ctx.font='bold 28px "Hiragino Sans",sans-serif';
+    ctx.textAlign='left';
+    ctx.fillText(`${item.venue||''} ${item.raceNo||''}R`,60,y+34);
+
+    // 信頼度
+    if(item.confidence!=null){
+      ctx.fillStyle=item.confidence>=90?'#3a7a2a':'#a06a0a';
+      ctx.font='bold 28px "Hiragino Sans",sans-serif';
+      ctx.textAlign='right';
+      ctx.fillText(`${item.confidence}%`,W-60,y+34);
+    }
+
+    // チップ
+    let cx=60;
+    const chipSize=36;
+    (item.chips||[]).forEach((no,j)=>{
+      drawChip(ctx,cx,y+44,chipSize,no);
+      cx+=chipSize+8;
+      if(j<item.chips.length-1){
+        ctx.fillStyle='#6b5530';
+        ctx.font='bold 22px sans-serif';
+        ctx.textAlign='left';
+        ctx.textBaseline='middle';
+        ctx.fillText('+',cx,y+44+chipSize/2);
+        cx+=20;
+      }
+    });
+
+    // ラベル
+    if(item.label){
+      ctx.fillStyle='#6b5530';
+      ctx.font='20px "Hiragino Sans",sans-serif';
+      ctx.textAlign='left';
+      ctx.textBaseline='middle';
+      ctx.fillText(item.label,cx+20,y+44+chipSize/2);
+    }
+
+    y+=cardH;
+  });
+
+  // フッター
+  if(opts.footer){
+    ctx.fillStyle='rgba(184,101,26,0.1)';
+    ctx.fillRect(0,H-110,W,110);
+    ctx.fillStyle='#b8651a';
+    ctx.font='bold 32px "Hiragino Sans",sans-serif';
+    ctx.textAlign='center';
+    ctx.textBaseline='middle';
+    ctx.fillText(opts.footer,W/2,H-75);
+  }
+  if(opts.handle){
+    ctx.fillStyle='#6b5530';
+    ctx.font='24px "Hiragino Sans",sans-serif';
+    ctx.textAlign='center';
+    ctx.fillText(opts.handle,W/2,H-30);
+  }
+
+  return cv.toDataURL('image/png');
+}
+
+function downloadDataURL(dataURL,filename){
+  const a=document.createElement('a');
+  a.href=dataURL; a.download=filename;
+  document.body.appendChild(a); a.click();
+  setTimeout(()=>document.body.removeChild(a),100);
+}
+
+/* ====================================================================
+   成績集計画面 (期間別分析)
+==================================================================== */
+function buildSignHitMap(allRaces,signs){
+  /* 全レース×全サインでヒット状況を計算
+     返値: { dateStr: {matches, hits, withResult, items:[{venue,raceNo,linked,top3,hit}]} } */
+  const racesByDate={};
+  allRaces.forEach(r=>{
+    if(!r.date)return;
+    (racesByDate[r.date]=racesByDate[r.date]||[]).push(r);
+  });
+  const dailyMap={};
+  Object.entries(racesByDate).forEach(([date,races])=>{
+    const dedup=dedupRaces(races);
+    let matches=0, hits=0, withResult=0;
+    const items=[];
+    for(const sign of signs){
+      for(const r of dedup){
+        const top3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+        const hasResult=top3.length>=3;
+        let isMatch=false, linkedNums=[], isHit=null;
+        const ents=r.entries||[];
+
+        if(sign.type==='PLAYER_SYABAN_LINK'||sign.conditionType==='PLAYER_SYABAN_LINK'){
+          const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===Number(sign.syaban));
+          if(myE){
+            isMatch=true; linkedNums=[Number(sign.linkedSyaban)];
+            if(hasResult)isHit=top3.includes(Number(sign.linkedSyaban));
+          }
+        }else if(sign.type==='PLAYER_SYABAN_PAIR_LINK'||sign.conditionType==='PLAYER_SYABAN_PAIR_LINK'){
+          const pair=Array.isArray(sign.linkedPair)?sign.linkedPair.map(Number):(sign.linkedPair||'').toString().split(',').map(Number);
+          const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===Number(sign.syaban));
+          if(myE&&pair.length===2){
+            isMatch=true; linkedNums=pair;
+            if(hasResult)isHit=pair.every(n=>top3.includes(n));
+          }
+        }
+
+        if(isMatch){
+          matches++;
+          if(hasResult){withResult++; if(isHit)hits++;}
+          items.push({
+            sign,venue:r.venue,raceNo:r.raceNo,linked:linkedNums,
+            top3:hasResult?top3:null,hit:isHit,
+          });
+        }
+      }
+    }
+    dailyMap[date]={matches,hits,withResult,items};
+  });
+  return dailyMap;
+}
+
+function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
+  const today=new Date().toISOString().slice(0,10);
+  const[period,setPeriod]=useState('day');
+  const[selectedDate,setSelectedDate]=useState(today);
+  const[logs,setLogs]=useState([]);
+  const[showLogs,setShowLogs]=useState(false);
+  useEffect(()=>{dbAll('predictionLogs').then(setLogs);},[showLogs]);
+
+  const allSigns=[
+    ...signConditions.filter(c=>c.active),
+    ...discoveries.filter(d=>d.active!==false),
+  ];
+
+  const dailyMap=useMemo(()=>buildSignHitMap(raceResults,allSigns),[raceResults,allSigns.length]);
+
+  // 全日付ソート (降順)
+  const allDates=Object.keys(dailyMap).filter(d=>dailyMap[d].matches>0).sort((a,b)=>b.localeCompare(a));
+
+  // 期間別集計
+  const periodStats=useMemo(()=>{
+    if(period==='day') return allDates.map(d=>({label:d,...dailyMap[d]}));
+    if(period==='week'){
+      const map={};
+      allDates.forEach(d=>{
+        const dt=new Date(d);
+        const day=dt.getDay();
+        const monday=new Date(dt);monday.setDate(dt.getDate()-((day+6)%7));
+        const wk=monday.toISOString().slice(0,10);
+        const e=map[wk]=map[wk]||{label:`${wk}〜`,matches:0,hits:0,withResult:0,items:[]};
+        e.matches+=dailyMap[d].matches; e.hits+=dailyMap[d].hits;
+        e.withResult+=dailyMap[d].withResult;
+        e.items.push(...dailyMap[d].items);
+      });
+      return Object.values(map).sort((a,b)=>b.label.localeCompare(a.label));
+    }
+    if(period==='month'){
+      const map={};
+      allDates.forEach(d=>{
+        const mo=d.slice(0,7);
+        const e=map[mo]=map[mo]||{label:mo,matches:0,hits:0,withResult:0,items:[]};
+        e.matches+=dailyMap[d].matches; e.hits+=dailyMap[d].hits;
+        e.withResult+=dailyMap[d].withResult;
+        e.items.push(...dailyMap[d].items);
+      });
+      return Object.values(map).sort((a,b)=>b.label.localeCompare(a.label));
+    }
+    return[];
+  },[period,allDates,dailyMap]);
+
+  // 全期間合計
+  const totalMatches=periodStats.reduce((s,d)=>s+d.matches,0);
+  const totalHits=periodStats.reduce((s,d)=>s+d.hits,0);
+  const totalWith=periodStats.reduce((s,d)=>s+d.withResult,0);
+  const totalRate=totalWith>0?Math.round(totalHits/totalWith*100):null;
+
+  // 選択日の詳細
+  const selectedDetail=dailyMap[selectedDate];
+
+  if(allSigns.length===0)return(
+    <div className="card" style={{textAlign:'center',padding:'40px 20px'}}>
+      <div style={{fontSize:'40px',marginBottom:'10px'}}>📈</div>
+      <div style={{fontWeight:'700'}}>採用サインなし</div>
+      <div style={{color:'var(--text2)',fontSize:'12px',marginTop:'8px'}}>「サイン」タブで採用してください</div>
+    </div>
+  );
+
+  return(
+    <div>
+      <div className="card">
+        <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+          <div style={{flex:1,fontWeight:'700',fontSize:'12px',color:'var(--text2)',letterSpacing:'.5px',textTransform:'uppercase'}}>予想記録履歴 ({logs.length}件)</div>
+          <button className="btn btn-sm btn-ghost" onClick={()=>setShowLogs(!showLogs)}>{showLogs?'閉じる':'表示'}</button>
+        </div>
+        {showLogs&&(
+          logs.length===0?<div className="empty">記録なし。本日タブで「💾 予想を記録」を押すと保存されます</div>:
+          <div style={{maxHeight:'240px',overflowY:'auto',marginTop:'8px'}}>
+            {logs.slice().sort((a,b)=>(b.savedAt||'').localeCompare(a.savedAt||'')).map((l,i)=>(
+              <div key={i} style={{padding:'7px 9px',marginBottom:'4px',background:'rgba(0,0,0,0.03)',borderRadius:'5px',fontSize:'12px'}}>
+                <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+                  <strong>{l.date}</strong>
+                  <span style={{color:'var(--text2)',fontSize:'11px'}}>{new Date(l.savedAt).toLocaleString('ja-JP')}</span>
+                  <span style={{marginLeft:'auto',fontSize:'10px',color:'var(--text2)'}}>
+                    {l.races?.length||0}R / {(l.races||[]).reduce((s,r)=>s+(r.alerts?.length||0),0)}サイン
+                  </span>
+                </div>
+                <div style={{fontSize:'10px',color:'var(--text2)',fontFamily:'monospace',marginTop:'3px',wordBreak:'break-all'}}>
+                  hash: {l.hash?.slice(0,32)||'-'}...
+                </div>
+                <button className="btn btn-sm btn-danger" style={{marginTop:'5px',fontSize:'10px',padding:'2px 6px',minHeight:'24px'}}
+                  onClick={async()=>{if(confirm('削除しますか?')){await dbDel('predictionLogs',l.id);setLogs(logs.filter(x=>x.id!==l.id));}}}>削除</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div className="card">
+        <div className="card-title">トータル成績 ({allSigns.length}サイン)</div>
+        <div style={{display:'flex',gap:'10px',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap'}}>
+          <div>
+            <div style={{fontSize:'10px',color:'var(--text2)'}}>該当レース</div>
+            <div style={{fontSize:'22px',fontWeight:'900'}}>{totalMatches}</div>
+          </div>
+          <div>
+            <div style={{fontSize:'10px',color:'var(--text2)'}}>的中</div>
+            <div style={{fontSize:'22px',fontWeight:'900',color:'var(--green)'}}>{totalHits}</div>
+          </div>
+          <div>
+            <div style={{fontSize:'10px',color:'var(--text2)'}}>結果あり</div>
+            <div style={{fontSize:'22px',fontWeight:'900'}}>{totalWith}</div>
+          </div>
+          <div>
+            <div style={{fontSize:'10px',color:'var(--text2)'}}>的中率</div>
+            <div style={{fontSize:'30px',fontWeight:'900',color:totalRate>=50?'var(--green)':'var(--red)'}}>
+              {totalRate!=null?totalRate+'%':'-'}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div style={{display:'flex',gap:'5px',marginBottom:'10px'}}>
+          <button className={`btn btn-sm ${period==='day'?'btn-primary':'btn-ghost'}`} onClick={()=>setPeriod('day')}>日別</button>
+          <button className={`btn btn-sm ${period==='week'?'btn-primary':'btn-ghost'}`} onClick={()=>setPeriod('week')}>週別</button>
+          <button className={`btn btn-sm ${period==='month'?'btn-primary':'btn-ghost'}`} onClick={()=>setPeriod('month')}>月別</button>
+        </div>
+        {periodStats.length===0?<div className="empty">データなし</div>:
+          <div style={{maxHeight:'420px',overflowY:'auto'}}>
+            {periodStats.slice(0,60).map((d,i)=>{
+              const rate=d.withResult>0?Math.round(d.hits/d.withResult*100):null;
+              const isSelected=selectedDate===d.label;
+              return(
+                <div key={i} onClick={()=>period==='day'&&setSelectedDate(d.label)}
+                  style={{display:'flex',gap:'8px',alignItems:'center',padding:'8px 10px',borderBottom:'1px solid var(--border)',cursor:period==='day'?'pointer':'default',
+                    background:isSelected?'rgba(184,101,26,0.08)':'transparent'}}>
+                  <span style={{minWidth:'110px',fontSize:'12px',fontWeight:'700'}}>{d.label}</span>
+                  <span style={{flex:1,fontSize:'11px',color:'var(--text2)'}}>該当{d.matches} / 結果{d.withResult}</span>
+                  {rate!=null&&(
+                    <span style={{fontWeight:'900',fontSize:'14px',color:rate>=50?'var(--green)':'var(--red)',minWidth:'62px',textAlign:'right'}}>
+                      {d.hits}/{d.withResult} <span style={{fontSize:'11px'}}>({rate}%)</span>
+                    </span>
+                  )}
+                  {rate==null&&<span style={{fontSize:'11px',color:'var(--yellow)'}}>⏳待</span>}
+                </div>
+              );
+            })}
+          </div>
+        }
+      </div>
+
+      {period==='day'&&selectedDetail&&selectedDetail.items.length>0&&(
+        <div className="card">
+          <div className="card-title">{selectedDate} の該当レース詳細 ({selectedDetail.matches}件)</div>
+          <div style={{maxHeight:'480px',overflowY:'auto'}}>
+            {selectedDetail.items.map((it,i)=>(
+              <div key={i} style={{display:'flex',alignItems:'center',gap:'7px',padding:'7px 9px',marginBottom:'4px',
+                borderRadius:'6px',fontSize:'12px',
+                background:it.hit===true?'rgba(58,122,42,0.08)':it.hit===false?'rgba(187,34,0,0.06)':'rgba(160,106,10,0.05)',
+                border:`1px solid ${it.hit===true?'var(--green)':it.hit===false?'var(--red)':'var(--border)'}`}}>
+                <span style={{fontWeight:'700',minWidth:'56px'}}>{it.venue}</span>
+                <span style={{minWidth:'30px'}}>{it.raceNo}R</span>
+                <span style={{display:'flex',gap:'3px'}}>{it.linked.map(n=><Chip key={n} no={n} size="sm"/>)}</span>
+                <span style={{flex:1,fontSize:'11px',color:'var(--text2)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                  {it.sign.desc||it.sign.description||''}
+                </span>
+                {it.top3?(
+                  <><span style={{color:'var(--text2)'}}>{it.top3.join('-')}</span>
+                  <span style={{fontWeight:'700',color:it.hit?'var(--green)':'var(--red)'}}>{it.hit?'✅':'❌'}</span></>
+                ):<span style={{color:'var(--yellow)'}}>⏳</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ====================================================================
    設定画面
 ==================================================================== */
 function SettingsScreen({connected,reload}){
@@ -2554,6 +3030,7 @@ function App(){
   const tabs=[
     {id:'today',icon:'📋',label:'本日'},
     {id:'tally',icon:'📊',label:'集計'},
+    {id:'perf',icon:'📈',label:'成績'},
     {id:'race',icon:'🔬',label:'予想'},
     {id:'input',icon:'📥',label:'入力'},
     {id:'sign',icon:'🌟',label:'サイン'},
@@ -2570,6 +3047,7 @@ function App(){
       <div className="content">
         {tab==='today'&&<TodayRacesScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
         {tab==='tally'&&<TallyScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
+        {tab==='perf'&&<PerformanceScreen raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
         {tab==='race'&&<TodayScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries} reload={reload}/>}
         {tab==='input'&&<InputScreen reload={reload}/>}
         {tab==='sign'&&<SignConditionsScreen players={players} signConditions={signConditions} discoveries={discoveries} raceResults={raceResults} reload={reload}/>}

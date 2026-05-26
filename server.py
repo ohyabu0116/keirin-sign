@@ -92,11 +92,12 @@ VENUE_NAME_TO_CD = {v: k for k, v in VENUE_MAP.items()}
 
 # フロント store → SQLiteテーブル名
 STORE_TABLE = {
-    'players':        'players',
-    'raceResults':    'race_results',
-    'signConditions': 'sign_conditions',
-    'signTracking':   'sign_tracking',
-    'discoveries':    'discoveries',
+    'players':         'players',
+    'raceResults':     'race_results',
+    'signConditions':  'sign_conditions',
+    'signTracking':    'sign_tracking',
+    'discoveries':     'discoveries',
+    'predictionLogs':  'prediction_logs',
 }
 
 # ── DB ────────────────────────────────────────────────────────
