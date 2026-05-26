@@ -778,6 +778,37 @@ function mineClientSide(races, players, opts={}){
   return {courseLink,venueSyaban:venueSyabanOut,kyakuSyaban:kyakuSyabanOut,kyakuPattern,playerSyabanLink,playerSyabanPairLink,playerComboLink};
 }
 
+// サインの自然言語定義を生成
+function describeSign(s){
+  const type=s.type||s.conditionType;
+  const rate=s.rate?` (${s.rate}%)`:'';
+  const trials=s.trials?` 過去${s.trials}回中${s.hits||0}回連動${rate}`:rate;
+
+  if(type==='PLAYER_SYABAN_LINK'){
+    const name=s.playerName||s.pName||(s.regNo||'').toString();
+    return `「${name} 選手」が ${s.syaban}番車 に入った時、${s.linkedSyaban}番車 が3着以内に来る${trials}`;
+  }
+  if(type==='PLAYER_SYABAN_PAIR_LINK'){
+    const name=s.playerName||s.pName||(s.regNo||'').toString();
+    const pair=Array.isArray(s.linkedPair)?s.linkedPair:[];
+    return `「${name} 選手」が ${s.syaban}番車 に入った時、${pair[0]||'?'}番車 と ${pair[1]||'?'}番車 の両方が3着以内に来る${trials}`;
+  }
+  if(type==='PLAYER_COMBO_LINK'){
+    return `「${s.playerNameA||'?'} 選手」が ${s.syaA||'?'}番車、かつ「${s.playerNameB||'?'} 選手」が ${s.syaB||'?'}番車 に入った時、${s.linkedSyaban}番車 が3着以内に来る${trials}`;
+  }
+  if(type==='PLAYER_COMBO_PAIR_LINK'){
+    const pair=Array.isArray(s.linkedPair)?s.linkedPair:[];
+    return `「${s.playerNameA||'?'} 選手」が ${s.syaA||'?'}番車、かつ「${s.playerNameB||'?'} 選手」が ${s.syaB||'?'}番車 に入った時、${pair[0]||'?'}番車 と ${pair[1]||'?'}番車 の両方が3着以内に来る${trials}`;
+  }
+  if(type==='COURSE_LINK'){
+    return `「${s.playerName||s.pName||'?'} 選手」が ${s.venue||'同会場'} の ${s.syaban}番車 に入った時、${s.lookback||3}走前の決まり目から2艇以上が3着以内に来る${trials}`;
+  }
+  if(type==='KYAKU_PATTERN'){
+    return `脚質構成が「${s.pattern}」の時、勝者の脚質は「${s.winnerKyaku}」になりやすい${trials}`;
+  }
+  return s.desc||s.description||type||'(定義不明)';
+}
+
 function classifyGrade(syumoku){
   if(!syumoku) return '';
   if(syumoku.includes('Ｓ級')||syumoku.includes('S級')) return 'S';
@@ -1720,8 +1751,9 @@ function SignConditionsScreen({players,signConditions,discoveries=[],reload,race
                     </>:<Chip no={d.linkedSyaban} size="sm"/>}
                     <span style={{marginLeft:'auto',color:'var(--green)',fontWeight:'900',fontSize:'14px'}}>{d.rate}%</span>
                   </div>
-                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
-                    試行{d.trials}回 ({d.hits}回的中)
+                  <div style={{fontSize:'12px',marginTop:'6px',lineHeight:'1.5',padding:'6px 8px',background:'rgba(184,101,26,0.05)',borderRadius:'4px'}}>
+                    <strong style={{fontSize:'10px',color:'var(--text2)',display:'block',marginBottom:'3px'}}>📋 定義</strong>
+                    {describeSign(d)}
                   </div>
                   <ExampleList examples={d.examples} misses={d.misses}/>
                   <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}}
@@ -1744,8 +1776,9 @@ function SignConditionsScreen({players,signConditions,discoveries=[],reload,race
                     <Chip no={d.linkedPair[1]} size="sm"/>
                     <span style={{color:'var(--green)',fontWeight:'700',fontSize:'13px'}}>両方3着内{d.rate}%</span>
                   </div>
-                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
-                    試行{d.trials}回 ({d.hits}回)
+                  <div style={{fontSize:'12px',marginTop:'5px',lineHeight:'1.5',padding:'6px 8px',background:'rgba(184,101,26,0.05)',borderRadius:'4px'}}>
+                    <strong style={{fontSize:'10px',color:'var(--text2)',display:'block',marginBottom:'3px'}}>📋 定義</strong>
+                    {describeSign({...d,type:'PLAYER_SYABAN_PAIR_LINK'})}
                   </div>
                   <ExampleList examples={d.examples} misses={d.misses}/>
                   <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}}
@@ -1770,9 +1803,11 @@ function SignConditionsScreen({players,signConditions,discoveries=[],reload,race
                     <Chip no={d.linkedSyaban} size="sm"/>
                     <span style={{color:'var(--green)',fontWeight:'700',fontSize:'13px'}}>3着内{d.rate}%</span>
                   </div>
-                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
-                    試行{d.trials}回 ({d.hits}回) / 1着{d.rateWin}%
+                  <div style={{fontSize:'12px',marginTop:'5px',lineHeight:'1.5',padding:'6px 8px',background:'rgba(184,101,26,0.05)',borderRadius:'4px'}}>
+                    <strong style={{fontSize:'10px',color:'var(--text2)',display:'block',marginBottom:'3px'}}>📋 定義</strong>
+                    {describeSign({...d,type:'PLAYER_SYABAN_LINK'})}
                   </div>
+                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>1着率 {d.rateWin}%</div>
                   <ExampleList examples={d.examples} misses={d.misses}/>
                   <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}}
                     onClick={async()=>{
@@ -1877,7 +1912,10 @@ function SignConditionsScreen({players,signConditions,discoveries=[],reload,race
                   </>}
                   <span style={{marginLeft:'auto',fontSize:'11px',fontWeight:'700',color:'var(--green)'}}>{d.rate}%</span>
                 </div>
-                <div style={{fontSize:'12px',marginTop:'5px'}}>{d.playerName||d.desc}</div>
+                <div style={{fontSize:'12px',marginTop:'5px',lineHeight:'1.5',padding:'6px 8px',background:'rgba(184,101,26,0.05)',borderRadius:'4px'}}>
+                  <strong style={{fontSize:'10px',color:'var(--text2)',display:'block',marginBottom:'3px'}}>📋 サインの定義</strong>
+                  {describeSign(d)}
+                </div>
                 <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
                   試行 {d.trials} 回
                   {d.adoptedAt&&` / 採用 ${new Date(d.adoptedAt).toLocaleDateString('ja-JP')}`}
@@ -2081,6 +2119,8 @@ function InputScreen({reload}){
           const get=(lst,k,d='')=>lst&&lst[0]?lst[0][k]:d;
           const pay3raw=(r.harai3renList?.[0]?.kingaku||'').replace(/[,円]/g,'');
           const pay2raw=(r.harai2syaList?.[0]?.kingaku||'').replace(/[,円]/g,'');
+          const ninki3=(r.harai3renList?.[0]?.ninki||'').replace(/[()]/g,'');
+          const ninki2=(r.harai2syaList?.[0]?.ninki||'').replace(/[()]/g,'');
           resMap[rno]={
             result1:get(r.tyakui1List||[],'rclblSyaban'),
             result2:get(r.tyakui2List||[],'rclblSyaban'),
@@ -2092,6 +2132,8 @@ function InputScreen({reload}){
             exactaCombo:r.harai2syaList?.[0]?.kumi||'',
             trifectaPayout:pay3raw?Number(pay3raw):null,
             exactaPayout:pay2raw?Number(pay2raw):null,
+            trifectaNinki:ninki3?Number(ninki3):null,
+            exactaNinki:ninki2?Number(ninki2):null,
           };
         });
         const races=(entriesJson.rInfo||[]).map(r=>({
@@ -2363,7 +2405,8 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
         if(a.linkedPair&&Array.isArray(a.linkedPair))chips.push(...a.linkedPair);
         else if(a.linkedSyaban)chips.push(Number(a.linkedSyaban));
         else if(a.syaban)chips.push(Number(a.syaban));
-        const payLabel=r.exactaPayout?` / 2車単 ${r.exactaPayout.toLocaleString()}円`:'';
+        const ninkiLabel=r.exactaNinki?` (${r.exactaNinki}人気)`:'';
+        const payLabel=r.exactaPayout?` / 2車単 ${r.exactaPayout.toLocaleString()}円${ninkiLabel}`:'';
         items.push({
           venue:r.venue, raceNo:r.raceNo, chips,
           label:`${r.result1||'?'}-${r.result2||'?'}-${r.result3||'?'} ${a.connected?'✅':'❌'}${payLabel}`,
@@ -2443,8 +2486,8 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
             </div>
             {hasResult&&(race.trifectaPayout||race.exactaPayout)&&(
               <div style={{display:'flex',gap:'10px',flexWrap:'wrap',fontSize:'11px',color:'var(--text2)',marginBottom:'8px',padding:'4px 8px',background:'rgba(184,101,26,0.05)',borderRadius:'5px'}}>
-                {race.exactaPayout&&<span>2車単 {race.exactaCombo} <strong style={{color:'var(--accent)'}}>{race.exactaPayout.toLocaleString()}円</strong></span>}
-                {race.trifectaPayout&&<span>3連単 {race.trifectaCombo} <strong style={{color:'var(--accent)'}}>{race.trifectaPayout.toLocaleString()}円</strong></span>}
+                {race.exactaPayout&&<span>2車単 {race.exactaCombo} <strong style={{color:'var(--accent)'}}>{race.exactaPayout.toLocaleString()}円</strong>{race.exactaNinki&&<span style={{marginLeft:'4px',color:'var(--text2)'}}>({race.exactaNinki}番人気)</span>}</span>}
+                {race.trifectaPayout&&<span>3連単 {race.trifectaCombo} <strong style={{color:'var(--accent)'}}>{race.trifectaPayout.toLocaleString()}円</strong>{race.trifectaNinki&&<span style={{marginLeft:'4px',color:'var(--text2)'}}>({race.trifectaNinki}番人気)</span>}</span>}
               </div>
             )}
             {race.alerts.map((a,j)=>{
@@ -2456,10 +2499,13 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
                   <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
                     {a.syaban&&<Chip no={a.syaban} size="sm"/>}
                     <span style={{fontWeight:'800',fontSize:'13px'}}>{a.pName}</span>
+                    {a.rate&&<span style={{fontSize:'11px',fontWeight:'700',color:'var(--green)'}}>{a.rate}%</span>}
                     {a.connected===true&&<span style={{color:'var(--green)',fontWeight:'800',fontSize:'12px'}}>✅</span>}
                     {a.connected===false&&<span style={{color:'var(--red)',fontWeight:'800',fontSize:'12px'}}>❌</span>}
                   </div>
-                  {a.desc&&<div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>{a.desc}</div>}
+                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'5px',lineHeight:'1.5'}}>
+                    📋 {describeSign(a)}
+                  </div>
                 </div>
               );
             })}
@@ -2529,8 +2575,8 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
             linkedNums,hitLinkedNums,missLinkedNums,
             hasResult,result:hasResult?top3.join('-'):null,
             connected:hasResult?(hitLinkedNums.length===linkedNums.length&&linkedNums.length>0):null,
-            trifectaPayout:r.trifectaPayout,trifectaCombo:r.trifectaCombo,
-            exactaPayout:r.exactaPayout,exactaCombo:r.exactaCombo,
+            trifectaPayout:r.trifectaPayout,trifectaCombo:r.trifectaCombo,trifectaNinki:r.trifectaNinki,
+            exactaPayout:r.exactaPayout,exactaCombo:r.exactaCombo,exactaNinki:r.exactaNinki,
           });
         }
       }
@@ -2645,8 +2691,8 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
                     </div>
                     {m.hasResult&&(m.exactaPayout||m.trifectaPayout)&&(
                       <div style={{display:'flex',gap:'10px',flexWrap:'wrap',marginTop:'4px',fontSize:'10px',color:'var(--text2)'}}>
-                        {m.exactaPayout&&<span>2車単 <strong style={{color:'var(--accent)'}}>{m.exactaPayout.toLocaleString()}円</strong></span>}
-                        {m.trifectaPayout&&<span>3連単 <strong style={{color:'var(--accent)'}}>{m.trifectaPayout.toLocaleString()}円</strong></span>}
+                        {m.exactaPayout&&<span>2車単 <strong style={{color:'var(--accent)'}}>{m.exactaPayout.toLocaleString()}円</strong>{m.exactaNinki&&` (${m.exactaNinki}人気)`}</span>}
+                        {m.trifectaPayout&&<span>3連単 <strong style={{color:'var(--accent)'}}>{m.trifectaPayout.toLocaleString()}円</strong>{m.trifectaNinki&&` (${m.trifectaNinki}人気)`}</span>}
                       </div>
                     )}
                   </div>
@@ -2862,6 +2908,7 @@ function buildSignHitMap(allRaces,signs){
             sign,venue:r.venue,raceNo:r.raceNo,linked:linkedNums,
             top3:hasResult?top3:null,hit:isHit,
             exactaPayout:r.exactaPayout,trifectaPayout:r.trifectaPayout,
+            exactaNinki:r.exactaNinki,trifectaNinki:r.trifectaNinki,
           });
         }
       }
@@ -3057,8 +3104,8 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
                 </div>
                 {it.top3&&(it.exactaPayout||it.trifectaPayout)&&(
                   <div style={{display:'flex',gap:'10px',flexWrap:'wrap',marginTop:'3px',fontSize:'10px',color:'var(--text2)',paddingLeft:'56px'}}>
-                    {it.exactaPayout&&<span>2車単 <strong style={{color:'var(--accent)'}}>{it.exactaPayout.toLocaleString()}円</strong></span>}
-                    {it.trifectaPayout&&<span>3連単 <strong style={{color:'var(--accent)'}}>{it.trifectaPayout.toLocaleString()}円</strong></span>}
+                    {it.exactaPayout&&<span>2車単 <strong style={{color:'var(--accent)'}}>{it.exactaPayout.toLocaleString()}円</strong>{it.exactaNinki&&` (${it.exactaNinki}人気)`}</span>}
+                    {it.trifectaPayout&&<span>3連単 <strong style={{color:'var(--accent)'}}>{it.trifectaPayout.toLocaleString()}円</strong>{it.trifectaNinki&&` (${it.trifectaNinki}人気)`}</span>}
                   </div>
                 )}
               </div>

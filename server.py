@@ -287,6 +287,12 @@ def normalize_result(jsj018):
         pay2 = (h2[0].get('kingaku') if h2 else '').replace(',','').replace('円','') if h2 else ''
         try: pay2 = int(pay2) if pay2 else None
         except: pay2 = None
+        ninki3 = (h3[0].get('ninki') if h3 else '').replace('(','').replace(')','') if h3 else ''
+        ninki2 = (h2[0].get('ninki') if h2 else '').replace('(','').replace(')','') if h2 else ''
+        try: ninki3 = int(ninki3) if ninki3 else None
+        except: ninki3 = None
+        try: ninki2 = int(ninki2) if ninki2 else None
+        except: ninki2 = None
         out[rno] = {
             'result1': first(t1, 'rclblSyaban'),
             'result2': first(t2, 'rclblSyaban'),
@@ -294,6 +300,10 @@ def normalize_result(jsj018):
             'kimari1': first(t1, 'rclblKimari', ''),
             'kimari2': first(t2, 'rclblKimari', ''),
             'kimari3': first(t3, 'rclblKimari', ''),
+            'trifectaCombo': h3[0].get('kumi') if h3 else '',
+            'exactaCombo': h2[0].get('kumi') if h2 else '',
+            'trifectaNinki': ninki3,
+            'exactaNinki': ninki2,
             'name1':   first(t1, 'rclblSensyuName', '').replace('　',' '),
             'name2':   first(t2, 'rclblSensyuName', '').replace('　',' '),
             'name3':   first(t3, 'rclblSensyuName', '').replace('　',' '),
