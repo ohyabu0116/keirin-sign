@@ -516,6 +516,12 @@ function mineClientSide(races, players, opts={}){
       (psHist[`${rn}|${sy}`]=psHist[`${rn}|${sy}`]||[]).push(r);
     });
   });
+  // 連動事例を構築 (各レースの結果を簡潔に)
+  const buildExample=(r)=>({
+    date:r.date,venue:r.venue,raceNo:r.raceNo,
+    result:[r.result1,r.result2,r.result3].filter(Boolean).join('-'),
+    kimari:r.kimari1||'',
+  });
   const playerSyabanLink=[];
   const psThreshold=Math.max(minTrials-2,3);
   const psRate=Math.max(minRate-10,70);
@@ -539,12 +545,23 @@ function mineClientSide(races, players, opts={}){
       const rate=Math.round(cnt/races.length*100);
       if(rate>=psRate){
         const p=playerMap[rn];
+        // 連動事例: 当該nが3着内に来たレース最大10件
+        const hitExamples=races.filter(r=>{
+          const t3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+          return t3.includes(n);
+        }).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,10).map(buildExample);
+        // 不発事例: 当該nが3着内に来なかったレース最大5件
+        const missExamples=races.filter(r=>{
+          const t3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+          return !t3.includes(n);
+        }).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,5).map(buildExample);
         playerSyabanLink.push({
           type:'PLAYER_SYABAN_LINK',
           regNo:rn,playerName:p?p.name:'?',
           syaban:sy,linkedSyaban:n,
           trials:races.length,hits:cnt,rate,
           rateWin:Math.round(winCount[n]/races.length*100),
+          examples:hitExamples, misses:missExamples,
           desc:`${p?p.name:'?'} が${sy}番のとき → ${n}番が3着以内 ${rate}% (${cnt}/${races.length})`,
         });
       }
@@ -569,11 +586,20 @@ function mineClientSide(races, players, opts={}){
         const rate=Math.round(cnt/races.length*100);
         if(rate>=pairRate){
           const p=playerMap[rn];
+          const hitExamples=races.filter(r=>{
+            const t3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+            return t3.includes(n1)&&t3.includes(n2);
+          }).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,10).map(buildExample);
+          const missExamples=races.filter(r=>{
+            const t3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+            return !(t3.includes(n1)&&t3.includes(n2));
+          }).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,5).map(buildExample);
           playerSyabanPairLink.push({
             type:'PLAYER_SYABAN_PAIR_LINK',
             regNo:rn,playerName:p?p.name:'?',
             syaban:sy,linkedPair:[n1,n2],
             trials:races.length,hits:cnt,rate,
+            examples:hitExamples, misses:missExamples,
             desc:`${p?p.name:'?'} が${sy}番のとき → ${n1}・${n2}両方3着以内 ${rate}% (${cnt}/${races.length})`,
           });
         }
@@ -1211,6 +1237,37 @@ function AnalysisResult({result,entries,pmByReg}){
 function PlayersScreen({players,reload}){
   const[q,setQ]=useState('');
   const[edit,setEdit]=useState(null);
+  const[showDup,setShowDup]=useState(false);
+
+  // 重複検出: 同regNo or 同name
+  const duplicates=useMemo(()=>{
+    if(!showDup)return null;
+    const byReg={}, byName={};
+    players.forEach(p=>{
+      const rn=String(p.regNo||'').trim();
+      const nm=(p.name||'').replace(/\s|　/g,'');
+      if(rn){(byReg[rn]=byReg[rn]||[]).push(p);}
+      if(nm){(byName[nm]=byName[nm]||[]).push(p);}
+    });
+    const sameReg=Object.entries(byReg).filter(([k,v])=>v.length>=2).map(([k,v])=>({key:k,kind:'登録番号',entries:v}));
+    const sameName=Object.entries(byName).filter(([k,v])=>v.length>=2&&new Set(v.map(p=>String(p.regNo||''))).size>=2).map(([k,v])=>({key:k,kind:'氏名',entries:v}));
+    return {sameReg,sameName};
+  },[players,showDup]);
+
+  const mergeGroup=async(group)=>{
+    // 最も情報量が多いものをマスターに、他を削除
+    const master=group.entries.reduce((best,p)=>{
+      const score=(p)=>(p.name?1:0)+(p.prefecture?1:0)+(p.kyaku?1:0)+(p.grade?1:0);
+      return score(p)>score(best)?p:best;
+    },group.entries[0]);
+    if(!confirm(`「${master.name}」(登番${master.regNo}) をマスターにして他${group.entries.length-1}件を削除します。よろしいですか?`))return;
+    for(const p of group.entries){
+      if(p.id===master.id)continue;
+      await dbDel('players',p.id);
+    }
+    reload();
+  };
+
   const filtered=useMemo(()=>{
     const s=q.toLowerCase();
     return q?players.filter(p=>p.name?.toLowerCase().includes(s)||String(p.regNo||'').includes(s)):players;
@@ -1234,8 +1291,62 @@ function PlayersScreen({players,reload}){
       <div className="card">
         <div className="card-title">選手DB ({players.length}名)</div>
         <input className="inp" placeholder="検索 (名前・登番)" value={q} onChange={e=>setQ(e.target.value)}/>
-        <button className="btn btn-primary btn-sm" style={{marginTop:'8px'}} onClick={()=>setEdit({regNo:'',name:'',prefecture:'',kyaku:'',grade:''})}>+ 追加</button>
+        <div style={{display:'flex',gap:'8px',marginTop:'8px',flexWrap:'wrap'}}>
+          <button className="btn btn-primary btn-sm" onClick={()=>setEdit({regNo:'',name:'',prefecture:'',kyaku:'',grade:''})}>+ 追加</button>
+          <button className="btn btn-ghost btn-sm" onClick={()=>setShowDup(!showDup)}>
+            {showDup?'重複検出を閉じる':'🔍 重複を検出'}
+          </button>
+        </div>
       </div>
+
+      {showDup&&duplicates&&(
+        <div className="card">
+          <div className="card-title">重複検出結果</div>
+          {(duplicates.sameReg.length===0&&duplicates.sameName.length===0)&&(
+            <div className="empty">重複なし ✓</div>
+          )}
+          {duplicates.sameReg.length>0&&(
+            <div style={{marginBottom:'12px'}}>
+              <div className="section-title" style={{color:'var(--red)'}}>同じ登録番号が複数 ({duplicates.sameReg.length}件)</div>
+              {duplicates.sameReg.map((g,i)=>(
+                <div key={i} className="hist-item" style={{borderColor:'var(--red)'}}>
+                  <div style={{fontSize:'12px',color:'var(--text2)',marginBottom:'6px'}}>登番 <strong style={{color:'var(--text)'}}>{g.key}</strong></div>
+                  {g.entries.map((p,j)=>(
+                    <div key={j} style={{display:'flex',alignItems:'center',gap:'8px',fontSize:'12px',padding:'3px 0',borderTop:j>0?'1px dashed var(--border)':'none'}}>
+                      <span style={{fontWeight:'700'}}>{p.name||'(名前なし)'}</span>
+                      <KyakuBadge k={p.kyaku}/>
+                      <span style={{color:'var(--text2)',fontSize:'11px'}}>{p.prefecture}</span>
+                      <span style={{color:'var(--text2)',fontSize:'10px',marginLeft:'auto'}}>id={p.id}</span>
+                    </div>
+                  ))}
+                  <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}} onClick={()=>mergeGroup(g)}>マージ (1件残す)</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {duplicates.sameName.length>0&&(
+            <div>
+              <div className="section-title" style={{color:'var(--yellow)'}}>同じ氏名で異なる登番 ({duplicates.sameName.length}件)</div>
+              {duplicates.sameName.map((g,i)=>(
+                <div key={i} className="hist-item" style={{borderColor:'var(--yellow)'}}>
+                  <div style={{fontSize:'12px',color:'var(--text2)',marginBottom:'6px'}}>氏名 <strong style={{color:'var(--text)'}}>{g.key}</strong></div>
+                  {g.entries.map((p,j)=>(
+                    <div key={j} style={{display:'flex',alignItems:'center',gap:'8px',fontSize:'12px',padding:'3px 0',borderTop:j>0?'1px dashed var(--border)':'none'}}>
+                      <span style={{fontWeight:'700',color:'var(--text2)',width:'60px',fontSize:'11px'}}>{p.regNo}</span>
+                      <span style={{fontWeight:'700'}}>{p.name}</span>
+                      <KyakuBadge k={p.kyaku}/>
+                      <span style={{color:'var(--text2)',fontSize:'11px'}}>{p.prefecture}</span>
+                    </div>
+                  ))}
+                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+                    ※ 異なる登番なので別人の可能性あり。確認して個別に削除してください。
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
       {filtered.slice(0,200).map(p=>(
         <div key={p.id} className="hist-item" onClick={()=>setEdit(p)} style={{cursor:'pointer'}}>
           <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
@@ -1285,6 +1396,45 @@ function PlayersScreen({players,reload}){
 /* ====================================================================
    サイン条件画面
 ==================================================================== */
+function ExampleList({examples,misses}){
+  const[open,setOpen]=useState(false);
+  if(!examples&&!misses)return null;
+  const ex=examples||[];
+  const ms=misses||[];
+  return(
+    <div style={{marginTop:'6px'}}>
+      <button className="btn btn-sm btn-ghost" onClick={e=>{e.stopPropagation();setOpen(!open);}} style={{fontSize:'11px',padding:'3px 8px',minHeight:'28px'}}>
+        {open?'▲ 事例を隠す':`▼ 連動事例 ${ex.length}件 / 不発 ${ms.length}件`}
+      </button>
+      {open&&(
+        <div style={{marginTop:'6px',padding:'6px 8px',background:'rgba(0,0,0,0.03)',borderRadius:'5px'}}>
+          {ex.length>0&&<>
+            <div style={{fontSize:'10px',color:'var(--green)',fontWeight:'700',marginBottom:'3px'}}>✅ 連動した過去レース</div>
+            {ex.map((e,i)=>(
+              <div key={i} style={{fontSize:'11px',color:'var(--text2)',padding:'2px 0',display:'flex',gap:'8px',flexWrap:'wrap'}}>
+                <span style={{minWidth:'82px'}}>{e.date}</span>
+                <span style={{minWidth:'60px'}}>{e.venue} {e.raceNo}R</span>
+                <strong style={{color:'var(--text)',minWidth:'52px'}}>{e.result}</strong>
+                {e.kimari&&<span style={{color:'var(--accent)'}}>{e.kimari}</span>}
+              </div>
+            ))}
+          </>}
+          {ms.length>0&&<>
+            <div style={{fontSize:'10px',color:'var(--red)',fontWeight:'700',marginTop:'8px',marginBottom:'3px'}}>❌ 不発だった過去レース</div>
+            {ms.map((e,i)=>(
+              <div key={i} style={{fontSize:'11px',color:'var(--text2)',padding:'2px 0',display:'flex',gap:'8px',flexWrap:'wrap'}}>
+                <span style={{minWidth:'82px'}}>{e.date}</span>
+                <span style={{minWidth:'60px'}}>{e.venue} {e.raceNo}R</span>
+                <strong style={{color:'var(--text)'}}>{e.result}</strong>
+              </div>
+            ))}
+          </>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SignConditionsScreen({players,signConditions,discoveries,reload,raceResults}){
   const[edit,setEdit]=useState(null);
   const[showDiscover,setShowDiscover]=useState(false);
@@ -1384,12 +1534,14 @@ function SignConditionsScreen({players,signConditions,discoveries,reload,raceRes
                   <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
                     試行{d.trials}回 ({d.hits}回)
                   </div>
+                  <ExampleList examples={d.examples} misses={d.misses}/>
                   <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}}
                     onClick={async()=>{
                       await dbPut('discoveries',{type:'PLAYER_SYABAN_PAIR_LINK',
                         regNo:d.regNo,playerName:d.playerName,
                         syaban:d.syaban,linkedPair:d.linkedPair,
                         trials:d.trials,rate:d.rate,desc:d.desc,
+                        examples:d.examples,misses:d.misses,
                         active:true,adoptedAt:Date.now()});
                       reload();alert('採用しました');
                     }}>採用</button>
@@ -1408,12 +1560,14 @@ function SignConditionsScreen({players,signConditions,discoveries,reload,raceRes
                   <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
                     試行{d.trials}回 ({d.hits}回) / 1着{d.rateWin}%
                   </div>
+                  <ExampleList examples={d.examples} misses={d.misses}/>
                   <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}}
                     onClick={async()=>{
                       await dbPut('discoveries',{type:'PLAYER_SYABAN_LINK',
                         regNo:d.regNo,playerName:d.playerName,
                         syaban:d.syaban,linkedSyaban:d.linkedSyaban,
                         trials:d.trials,rate:d.rate,rateWin:d.rateWin,desc:d.desc,
+                        examples:d.examples,misses:d.misses,
                         active:true,adoptedAt:Date.now()});
                       reload();alert('採用しました');
                     }}>採用</button>
@@ -1941,6 +2095,171 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
 }
 
 /* ====================================================================
+   集計画面 (採用サイン × 本日のレース)
+==================================================================== */
+function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
+  const today=new Date().toISOString().slice(0,10);
+  const todayRaces=useMemo(()=>raceResults.filter(r=>r.date===today),[raceResults,today]);
+
+  // 各サイン (条件+発見) の本日該当一覧を作成
+  const tally=useMemo(()=>{
+    const items=[];
+    const allSigns=[
+      ...signConditions.filter(c=>c.active).map(c=>({...c,_source:'manual'})),
+      ...discoveries.filter(d=>d.active!==false).map(d=>({...d,_source:'auto'})),
+    ];
+    for(const sign of allSigns){
+      // 各今日のレースについてマッチ判定
+      const matchedRaces=[];
+      for(const r of todayRaces){
+        const ents=r.entries||[];
+        let isMatch=false, linkedNums=[], hitLinkedNums=[], missLinkedNums=[];
+        const top3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+        const hasResult=top3.length>=3;
+
+        if(sign.type==='PLAYER_SYABAN_LINK'||sign.conditionType==='PLAYER_SYABAN_LINK'){
+          const sy=Number(sign.syaban);
+          const linkedNo=Number(sign.linkedSyaban);
+          const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===sy);
+          if(myE){
+            isMatch=true;
+            linkedNums=[linkedNo];
+            if(hasResult){
+              if(top3.includes(linkedNo))hitLinkedNums.push(linkedNo);
+              else missLinkedNums.push(linkedNo);
+            }
+          }
+        }else if(sign.type==='PLAYER_SYABAN_PAIR_LINK'||sign.conditionType==='PLAYER_SYABAN_PAIR_LINK'){
+          const sy=Number(sign.syaban);
+          const pair=Array.isArray(sign.linkedPair)?sign.linkedPair.map(Number):(sign.linkedPair||'').toString().split(',').map(Number);
+          const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===sy);
+          if(myE&&pair.length===2){
+            isMatch=true;
+            linkedNums=pair;
+            if(hasResult){
+              const bothIn=pair.every(n=>top3.includes(n));
+              if(bothIn)hitLinkedNums=pair;
+              else missLinkedNums=pair.filter(n=>!top3.includes(n));
+            }
+          }
+        }else if(sign.type==='COURSE_LINK'||sign.conditionType==='COURSE_LINK'){
+          const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&String(e.syaban)===String(sign.syaban));
+          if(myE&&(!sign.venue||r.venue===sign.venue))isMatch=true;
+        }
+
+        if(isMatch){
+          matchedRaces.push({
+            venue:r.venue,raceNo:r.raceNo,
+            linkedNums,hitLinkedNums,missLinkedNums,
+            hasResult,result:hasResult?top3.join('-'):null,
+            connected:hasResult?(hitLinkedNums.length===linkedNums.length&&linkedNums.length>0):null,
+          });
+        }
+      }
+      if(matchedRaces.length>0){
+        const withResult=matchedRaces.filter(m=>m.hasResult);
+        const connected=withResult.filter(m=>m.connected);
+        items.push({sign,matchedRaces,
+          totalMatches:matchedRaces.length,
+          withResult:withResult.length,
+          connectedCount:connected.length,
+          waitingCount:matchedRaces.length-withResult.length,
+        });
+      }
+    }
+    return items.sort((a,b)=>{
+      const ra=a.withResult>0?a.connectedCount/a.withResult:0;
+      const rb=b.withResult>0?b.connectedCount/b.withResult:0;
+      return rb-ra||b.totalMatches-a.totalMatches;
+    });
+  },[todayRaces,signConditions,discoveries]);
+
+  // 全体サマリ
+  const totalMatches=tally.reduce((s,t)=>s+t.totalMatches,0);
+  const totalWith=tally.reduce((s,t)=>s+t.withResult,0);
+  const totalConn=tally.reduce((s,t)=>s+t.connectedCount,0);
+
+  if(tally.length===0)return(
+    <div className="card" style={{textAlign:'center',padding:'40px 20px'}}>
+      <div style={{fontSize:'40px',marginBottom:'10px'}}>📊</div>
+      <div style={{fontWeight:'700'}}>採用サインの該当レースなし</div>
+      <div style={{color:'var(--text2)',fontSize:'12px',marginTop:'8px'}}>
+        「サイン」タブで自動マイニング→採用ボタン<br/>
+        または「入力」タブで本日のレースを取得してください
+      </div>
+    </div>
+  );
+
+  return(
+    <div>
+      {totalWith>0&&(
+        <div className="card" style={{textAlign:'center',padding:'18px',border:`2px solid ${totalConn/totalWith>=0.5?'var(--green)':'var(--border)'}`}}>
+          <div style={{fontSize:'12px',color:'var(--text2)',fontWeight:'600',textTransform:'uppercase',marginBottom:'6px'}}>本日のサイン的中</div>
+          <div style={{fontSize:'32px',fontWeight:'900',color:totalConn/totalWith>=0.5?'var(--green)':'var(--red)'}}>
+            {totalConn}<span style={{fontSize:'18px',color:'var(--text2)'}}>/{totalWith}</span>
+            <span style={{fontSize:'16px',marginLeft:'8px'}}>{Math.round(totalConn/totalWith*100)}%</span>
+          </div>
+          <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+            該当 {totalMatches}件 (結果待ち {totalMatches-totalWith}件)
+          </div>
+        </div>
+      )}
+      {totalWith===0&&totalMatches>0&&(
+        <div className="card" style={{textAlign:'center',padding:'14px'}}>
+          <div style={{fontSize:'13px',color:'var(--yellow)',fontWeight:'700'}}>⏳ {totalMatches}件 結果待ち</div>
+        </div>
+      )}
+
+      {tally.map((t,i)=>{
+        const hitRate=t.withResult>0?Math.round(t.connectedCount/t.withResult*100):null;
+        const borderColor=hitRate==null?'var(--border)':(hitRate>=50?'var(--green)':'var(--red)');
+        return(
+          <div key={i} className="card" style={{borderColor,borderWidth:'2px'}}>
+            <div style={{display:'flex',alignItems:'center',gap:'6px',flexWrap:'wrap',marginBottom:'8px'}}>
+              <span style={{fontSize:'14px'}}>{t.sign._source==='auto'?'🔬':'✋'}</span>
+              <span style={{fontWeight:'700',fontSize:'13px',flex:1}}>{t.sign.desc||t.sign.description||t.sign.type||t.sign.conditionType}</span>
+              {hitRate!=null&&(
+                <span style={{fontWeight:'900',fontSize:'15px',color:hitRate>=50?'var(--green)':'var(--red)'}}>
+                  {t.connectedCount}/{t.withResult} <span style={{fontSize:'11px'}}>({hitRate}%)</span>
+                </span>
+              )}
+              {hitRate==null&&<span style={{fontSize:'12px',color:'var(--yellow)'}}>⏳結果待ち</span>}
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
+              {t.matchedRaces.map((m,j)=>{
+                const bg=m.connected===true?'rgba(58,122,42,0.08)':
+                         m.connected===false?'rgba(187,34,0,0.06)':
+                         'rgba(160,106,10,0.05)';
+                const bdr=m.connected===true?'var(--green)':m.connected===false?'var(--red)':'var(--border)';
+                return(
+                  <div key={j} style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',padding:'6px 9px',background:bg,border:`1px solid ${bdr}`,borderRadius:'6px',fontSize:'12px'}}>
+                    <span style={{fontWeight:'700',minWidth:'56px'}}>{m.venue}</span>
+                    <span style={{minWidth:'30px'}}>{m.raceNo}R</span>
+                    <span style={{display:'flex',gap:'3px'}}>
+                      {m.linkedNums.map(n=>(
+                        <Chip key={n} no={n} size="sm"/>
+                      ))}
+                    </span>
+                    {m.hasResult?(
+                      <>
+                        <span style={{marginLeft:'auto',color:'var(--text2)'}}>結果 <strong style={{color:'var(--text)'}}>{m.result}</strong></span>
+                        <span style={{color:m.connected?'var(--green)':'var(--red)',fontWeight:'700'}}>{m.connected?'✅':'❌'}</span>
+                      </>
+                    ):(
+                      <span style={{marginLeft:'auto',color:'var(--yellow)',fontSize:'11px'}}>⏳</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ====================================================================
    設定画面
 ==================================================================== */
 function SettingsScreen({connected,reload}){
@@ -2067,6 +2386,7 @@ function App(){
 
   const tabs=[
     {id:'today',icon:'📋',label:'本日'},
+    {id:'tally',icon:'📊',label:'集計'},
     {id:'race',icon:'🔬',label:'予想'},
     {id:'input',icon:'📥',label:'入力'},
     {id:'sign',icon:'🌟',label:'サイン'},
@@ -2082,6 +2402,7 @@ function App(){
       </div>
       <div className="content">
         {tab==='today'&&<TodayRacesScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
+        {tab==='tally'&&<TallyScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
         {tab==='race'&&<TodayScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries} reload={reload}/>}
         {tab==='input'&&<InputScreen reload={reload}/>}
         {tab==='sign'&&<SignConditionsScreen players={players} signConditions={signConditions} discoveries={discoveries} raceResults={raceResults} reload={reload}/>}

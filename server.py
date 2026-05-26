@@ -557,6 +557,13 @@ def mine_course_link(min_trials=5, min_rate=90, lookback_range=(2,5)):
     out.sort(key=lambda x: (-x['rate2'], -x['trials']))
     return out
 
+def _build_example(r):
+    return {
+        'date': r.get('date'), 'venue': r.get('venue'), 'raceNo': r.get('raceNo'),
+        'result': '-'.join(str(x) for x in [r.get('result1'), r.get('result2'), r.get('result3')] if x),
+        'kimari': r.get('kimari1') or '',
+    }
+
 def mine_player_syaban_link(min_trials=3, min_rate=70):
     """「ある選手が○番のとき、△番が3着以内に来る確率」を集計
     競輪の代表的なサイン: 特定選手が固定車番に入ると連動車番が決まる"""
@@ -591,6 +598,11 @@ def mine_player_syaban_link(min_trials=3, min_rate=70):
             win_rate = round(win_count[linked_sy] / len(races_for) * 100)
             if rate >= min_rate:
                 p = players.get(rn, {})
+                # 連動事例 (3着内に来た) と 不発事例
+                hits = [r for r in races_for if linked_sy in [int(r.get(k) or 0) for k in ('result1','result2','result3')]]
+                misses = [r for r in races_for if linked_sy not in [int(r.get(k) or 0) for k in ('result1','result2','result3')]]
+                hits.sort(key=lambda r: r.get('date',''), reverse=True)
+                misses.sort(key=lambda r: r.get('date',''), reverse=True)
                 out.append({
                     'type': 'PLAYER_SYABAN_LINK',
                     'regNo': rn,
@@ -601,6 +613,8 @@ def mine_player_syaban_link(min_trials=3, min_rate=70):
                     'hits': cnt,
                     'rate': rate,
                     'rateWin': win_rate,
+                    'examples': [_build_example(r) for r in hits[:10]],
+                    'misses': [_build_example(r) for r in misses[:5]],
                     'desc': f'{p.get("name", "?")} が{sy}番のとき → {linked_sy}番が3着以内 {rate}% ({cnt}/{len(races_for)})',
                 })
     out.sort(key=lambda x: (-x['rate'], -x['trials']))
@@ -637,6 +651,10 @@ def mine_player_syaban_pair_link(min_trials=3, min_rate=70):
                 rate = round(cnt / len(races_for) * 100)
                 if rate >= min_rate:
                     p = players.get(rn, {})
+                    hit_races = [r for r in races_for if {n1,n2}.issubset(set(int(r.get(k) or 0) for k in ('result1','result2','result3')))]
+                    miss_races = [r for r in races_for if not {n1,n2}.issubset(set(int(r.get(k) or 0) for k in ('result1','result2','result3')))]
+                    hit_races.sort(key=lambda r: r.get('date',''), reverse=True)
+                    miss_races.sort(key=lambda r: r.get('date',''), reverse=True)
                     out.append({
                         'type': 'PLAYER_SYABAN_PAIR_LINK',
                         'regNo': rn,
@@ -646,6 +664,8 @@ def mine_player_syaban_pair_link(min_trials=3, min_rate=70):
                         'trials': len(races_for),
                         'hits': cnt,
                         'rate': rate,
+                        'examples': [_build_example(r) for r in hit_races[:10]],
+                        'misses': [_build_example(r) for r in miss_races[:5]],
                         'desc': f'{p.get("name","?")} が{sy}番のとき → {n1}・{n2}両方3着以内 {rate}% ({cnt}/{len(races_for)})',
                     })
     out.sort(key=lambda x: (-x['rate'], -x['trials']))
