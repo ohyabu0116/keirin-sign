@@ -2751,9 +2751,14 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
       ...signConditions.filter(c=>c.active).map(c=>({...c,_source:'manual'})),
       ...discoveries.filter(d=>d.active!==false).map(d=>({...d,_source:'auto'})),
     ]);
+    const seenSignKeys=new Set();
     for(const sign of allSigns){
+      const sk=signKey(sign);
+      if(seenSignKeys.has(sk))continue;
+      seenSignKeys.add(sk);
       // 各今日のレースについてマッチ判定
       const matchedRaces=[];
+      const seenRaceKeys=new Set();
       for(const r of todayRaces){
         const ents=r.entries||[];
         let isMatch=false, linkedNums=[], hitLinkedNums=[], missLinkedNums=[];
@@ -2791,6 +2796,9 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
         }
 
         if(isMatch){
+          const rk=`${r.venue}|${r.raceNo}`;
+          if(seenRaceKeys.has(rk))continue;
+          seenRaceKeys.add(rk);
           matchedRaces.push({
             venue:r.venue,raceNo:r.raceNo,
             linkedNums,hitLinkedNums,missLinkedNums,
@@ -3091,6 +3099,7 @@ function buildSignHitMap(allRaces,signsRaw){
   /* 全レース×全サインでヒット状況を計算
      返値: { dateStr: {matches, hits, withResult, items:[{venue,raceNo,linked,top3,hit}]} } */
   const signs=dedupSigns(signsRaw);
+  console.log(`[buildSignHitMap] 入力サイン ${signsRaw.length}件 → 重複排除後 ${signs.length}件`);
   const racesByDate={};
   allRaces.forEach(r=>{
     if(!r.date)return;
@@ -3099,9 +3108,11 @@ function buildSignHitMap(allRaces,signsRaw){
   const dailyMap={};
   Object.entries(racesByDate).forEach(([date,races])=>{
     const dedup=dedupRaces(races);
+    const seenItems=new Set();  // signKey + race-key で重複排除
     let matches=0, hits=0, withResult=0;
     const items=[];
     for(const sign of signs){
+      const sk=signKey(sign);
       for(const r of dedup){
         const top3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
         const hasResult=top3.length>=3;
@@ -3124,6 +3135,9 @@ function buildSignHitMap(allRaces,signsRaw){
         }
 
         if(isMatch){
+          const itemKey=`${sk}|${r.venue}|${r.raceNo}`;
+          if(seenItems.has(itemKey))continue;
+          seenItems.add(itemKey);
           matches++;
           if(hasResult){withResult++; if(isHit)hits++;}
           items.push({
@@ -3382,6 +3396,26 @@ function SettingsScreen({connected,reload}){
     reload();
   };
 
+  const dedupSignDB=async()=>{
+    const discs=await dbAll('discoveries');
+    const seen=new Map();
+    const toDelete=[];
+    discs.forEach(d=>{
+      const k=signKey(d);
+      if(seen.has(k)){
+        // 既存より新しい(id大)なら新しい方を残す
+        const prev=seen.get(k);
+        if((d.id||0)>(prev.id||0)){toDelete.push(prev.id);seen.set(k,d);}
+        else toDelete.push(d.id);
+      }else seen.set(k,d);
+    });
+    if(toDelete.length===0)return alert('重複サインはありませんでした');
+    if(!confirm(`重複サイン ${toDelete.length}件 を削除します (${discs.length}件 → ${discs.length-toDelete.length}件)`))return;
+    for(const id of toDelete){await dbDel('discoveries',id);}
+    alert(`${toDelete.length}件の重複サインを削除しました`);
+    reload();
+  };
+
   const autoRegister=async()=>{
     if(!_useServer){
       // クライアントサイド実装
@@ -3438,6 +3472,9 @@ function SettingsScreen({connected,reload}){
           </button>
           <button className="btn btn-ghost btn-sm" onClick={dedupDB}>
             🧹 重複レースを削除
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={dedupSignDB}>
+            🧹 重複サインを削除
           </button>
         </div>
       </div>
