@@ -2787,7 +2787,36 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
       });
       const withResult=alerts.map(a=>{
         const top3=[r.result1,r.result2,r.result3].filter(v=>v!=null).map(Number);
-        const connected=top3.length>0?top3.includes(Number(a.syaban)):null;
+        if(top3.length===0)return{...a,connected:null};
+        // サインタイプ別に「連動」判定を変える
+        let connected=null;
+        if(a.type==='PLAYER_SYABAN_PAIR_LINK'||a.type==='PLAYER_SYABAN_PAIR_LINK_AUTO'){
+          // 2車連動: linkedPair の両方が3着内
+          const pair=Array.isArray(a.linkedPair)?a.linkedPair.map(Number):[];
+          if(pair.length===2)connected=pair.every(n=>top3.includes(n));
+          else connected=top3.includes(Number(a.syaban));
+        }else if(a.type==='PLAYER_SYABAN_LINK'||a.type==='PLAYER_SYABAN_LINK_AUTO'){
+          // 単独連動: linkedSyaban が3着内
+          if(a.linkedSyaban!=null)connected=top3.includes(Number(a.linkedSyaban));
+          else connected=top3.includes(Number(a.syaban));
+        }else if(a.type==='PLAYER_COMBO_PAIR_LINK'||a.type==='PLAYER_COMBO_PAIR_LINK_AUTO'){
+          const pair=Array.isArray(a.linkedPair)?a.linkedPair.map(Number):[];
+          if(pair.length===2)connected=pair.every(n=>top3.includes(n));
+          else connected=null;
+        }else if(a.type==='PLAYER_COMBO_LINK'||a.type==='PLAYER_COMBO_LINK_AUTO'){
+          if(a.linkedSyaban!=null)connected=top3.includes(Number(a.linkedSyaban));
+          else connected=null;
+        }else if(a.type==='COURSE_LINK_AUTO'||a.type==='COURSE_LINK'){
+          // 参照レースの3着内2艇以上が今日の3着内に
+          const refBoats=a.refBoats||[];
+          if(refBoats.length>0){
+            const inTop=refBoats.filter(n=>top3.includes(Number(n))).length;
+            connected=inTop>=2;
+          }else connected=null;
+        }else{
+          // フォールバック: 選手の車番が3着内
+          connected=top3.includes(Number(a.syaban));
+        }
         return{...a,connected};
       });
       return{...r,alerts:withResult,linked,tickets};
@@ -4071,7 +4100,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v1.2<br/>
+          競輪サイン予想 v1.3<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -4190,7 +4219,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.2</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.3</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
