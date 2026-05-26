@@ -1919,6 +1919,8 @@ function InputScreen({reload}){
           const rno=parseInt((r.rclblRaceNo||'').replace('R',''));
           if(!rno)return;
           const get=(lst,k,d='')=>lst&&lst[0]?lst[0][k]:d;
+          const pay3raw=(r.harai3renList?.[0]?.kingaku||'').replace(/[,円]/g,'');
+          const pay2raw=(r.harai2syaList?.[0]?.kingaku||'').replace(/[,円]/g,'');
           resMap[rno]={
             result1:get(r.tyakui1List||[],'rclblSyaban'),
             result2:get(r.tyakui2List||[],'rclblSyaban'),
@@ -1926,6 +1928,10 @@ function InputScreen({reload}){
             kimari1:get(r.tyakui1List||[],'rclblKimari',''),
             kimari2:get(r.tyakui2List||[],'rclblKimari',''),
             kimari3:get(r.tyakui3List||[],'rclblKimari',''),
+            trifectaCombo:r.harai3renList?.[0]?.kumi||'',
+            exactaCombo:r.harai2syaList?.[0]?.kumi||'',
+            trifectaPayout:pay3raw?Number(pay3raw):null,
+            exactaPayout:pay2raw?Number(pay2raw):null,
           };
         });
         const races=(entriesJson.rInfo||[]).map(r=>({
@@ -2190,26 +2196,30 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
   const exportResultImage=async()=>{
     // 結果が出ているもの中心
     const items=[];
+    let totalPayout=0;
     analyzed.forEach(r=>{
       r.alerts.filter(a=>a.connected!==null).forEach(a=>{
         const chips=[];
         if(a.linkedPair&&Array.isArray(a.linkedPair))chips.push(...a.linkedPair);
         else if(a.linkedSyaban)chips.push(Number(a.linkedSyaban));
         else if(a.syaban)chips.push(Number(a.syaban));
+        const payLabel=r.exactaPayout?` / 2車単 ${r.exactaPayout.toLocaleString()}円`:'';
         items.push({
           venue:r.venue, raceNo:r.raceNo, chips,
-          label:`結果 ${r.result1||'?'}-${r.result2||'?'}-${r.result3||'?'} ${a.connected?'✅':'❌'}`,
+          label:`${r.result1||'?'}-${r.result2||'?'}-${r.result3||'?'} ${a.connected?'✅':'❌'}${payLabel}`,
           confidence:a.rate||null,
         });
+        if(a.connected&&r.exactaPayout)totalPayout+=r.exactaPayout;
       });
     });
     if(items.length===0)return alert('結果が出ているサイン該当レースがありません');
     const todayRate=confirmed.length>0?Math.round(hits/confirmed.length*100):0;
+    const footerExtra=totalPayout>0?` / 的中配当合計 ${totalPayout.toLocaleString()}円`:'';
     const dataURL=await generateShareImage({
       title:'本日の結果報告',
       date:today,
       items,
-      footer:`本日 ${hits}/${confirmed.length} 的中 (${todayRate}%)`,
+      footer:`本日 ${hits}/${confirmed.length} 的中 (${todayRate}%)${footerExtra}`,
       handle:shareHandle,
     });
     downloadDataURL(dataURL,`keirin-result-${today}.png`);
@@ -2271,6 +2281,12 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
                 <span style={{marginLeft:'auto',fontSize:'12px',color:'var(--yellow)',fontWeight:'700'}}>⏳ 結果待ち</span>
               )}
             </div>
+            {hasResult&&(race.trifectaPayout||race.exactaPayout)&&(
+              <div style={{display:'flex',gap:'10px',flexWrap:'wrap',fontSize:'11px',color:'var(--text2)',marginBottom:'8px',padding:'4px 8px',background:'rgba(184,101,26,0.05)',borderRadius:'5px'}}>
+                {race.exactaPayout&&<span>2車単 {race.exactaCombo} <strong style={{color:'var(--accent)'}}>{race.exactaPayout.toLocaleString()}円</strong></span>}
+                {race.trifectaPayout&&<span>3連単 {race.trifectaCombo} <strong style={{color:'var(--accent)'}}>{race.trifectaPayout.toLocaleString()}円</strong></span>}
+              </div>
+            )}
             {race.alerts.map((a,j)=>{
               let bg='rgba(160,106,10,0.07)', bdr='var(--yellow)';
               if(a.connected===true){bg='rgba(58,122,42,0.09)';bdr='var(--green)';}
@@ -2353,6 +2369,8 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
             linkedNums,hitLinkedNums,missLinkedNums,
             hasResult,result:hasResult?top3.join('-'):null,
             connected:hasResult?(hitLinkedNums.length===linkedNums.length&&linkedNums.length>0):null,
+            trifectaPayout:r.trifectaPayout,trifectaCombo:r.trifectaCombo,
+            exactaPayout:r.exactaPayout,exactaCombo:r.exactaCombo,
           });
         }
       }
@@ -2447,21 +2465,29 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
                          'rgba(160,106,10,0.05)';
                 const bdr=m.connected===true?'var(--green)':m.connected===false?'var(--red)':'var(--border)';
                 return(
-                  <div key={j} style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',padding:'6px 9px',background:bg,border:`1px solid ${bdr}`,borderRadius:'6px',fontSize:'12px'}}>
-                    <span style={{fontWeight:'700',minWidth:'56px'}}>{m.venue}</span>
-                    <span style={{minWidth:'30px'}}>{m.raceNo}R</span>
-                    <span style={{display:'flex',gap:'3px'}}>
-                      {m.linkedNums.map(n=>(
-                        <Chip key={n} no={n} size="sm"/>
-                      ))}
-                    </span>
-                    {m.hasResult?(
-                      <>
-                        <span style={{marginLeft:'auto',color:'var(--text2)'}}>結果 <strong style={{color:'var(--text)'}}>{m.result}</strong></span>
-                        <span style={{color:m.connected?'var(--green)':'var(--red)',fontWeight:'700'}}>{m.connected?'✅':'❌'}</span>
-                      </>
-                    ):(
-                      <span style={{marginLeft:'auto',color:'var(--yellow)',fontSize:'11px'}}>⏳</span>
+                  <div key={j} style={{padding:'6px 9px',background:bg,border:`1px solid ${bdr}`,borderRadius:'6px',marginBottom:'4px',fontSize:'12px'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap'}}>
+                      <span style={{fontWeight:'700',minWidth:'56px'}}>{m.venue}</span>
+                      <span style={{minWidth:'30px'}}>{m.raceNo}R</span>
+                      <span style={{display:'flex',gap:'3px'}}>
+                        {m.linkedNums.map(n=>(
+                          <Chip key={n} no={n} size="sm"/>
+                        ))}
+                      </span>
+                      {m.hasResult?(
+                        <>
+                          <span style={{marginLeft:'auto',color:'var(--text2)'}}>結果 <strong style={{color:'var(--text)'}}>{m.result}</strong></span>
+                          <span style={{color:m.connected?'var(--green)':'var(--red)',fontWeight:'700'}}>{m.connected?'✅':'❌'}</span>
+                        </>
+                      ):(
+                        <span style={{marginLeft:'auto',color:'var(--yellow)',fontSize:'11px'}}>⏳</span>
+                      )}
+                    </div>
+                    {m.hasResult&&(m.exactaPayout||m.trifectaPayout)&&(
+                      <div style={{display:'flex',gap:'10px',flexWrap:'wrap',marginTop:'4px',fontSize:'10px',color:'var(--text2)'}}>
+                        {m.exactaPayout&&<span>2車単 <strong style={{color:'var(--accent)'}}>{m.exactaPayout.toLocaleString()}円</strong></span>}
+                        {m.trifectaPayout&&<span>3連単 <strong style={{color:'var(--accent)'}}>{m.trifectaPayout.toLocaleString()}円</strong></span>}
+                      </div>
                     )}
                   </div>
                 );
@@ -2675,6 +2701,7 @@ function buildSignHitMap(allRaces,signs){
           items.push({
             sign,venue:r.venue,raceNo:r.raceNo,linked:linkedNums,
             top3:hasResult?top3:null,hit:isHit,
+            exactaPayout:r.exactaPayout,trifectaPayout:r.trifectaPayout,
           });
         }
       }
@@ -2738,6 +2765,13 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
   const totalHits=periodStats.reduce((s,d)=>s+d.hits,0);
   const totalWith=periodStats.reduce((s,d)=>s+d.withResult,0);
   const totalRate=totalWith>0?Math.round(totalHits/totalWith*100):null;
+  // 的中時の配当合計
+  const totalPayout=periodStats.reduce((s,d)=>{
+    return s+(d.items||[]).filter(it=>it.hit).reduce((ss,it)=>ss+(it.exactaPayout||0),0);
+  },0);
+  const totalTrifecta=periodStats.reduce((s,d)=>{
+    return s+(d.items||[]).filter(it=>it.hit).reduce((ss,it)=>ss+(it.trifectaPayout||0),0);
+  },0);
 
   // 選択日の詳細
   const selectedDetail=dailyMap[selectedDate];
@@ -2801,6 +2835,13 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
             </div>
           </div>
         </div>
+        {(totalPayout>0||totalTrifecta>0)&&(
+          <div style={{display:'flex',gap:'14px',marginTop:'8px',paddingTop:'8px',borderTop:'1px dashed var(--border)',fontSize:'11px',color:'var(--text2)',flexWrap:'wrap'}}>
+            {totalPayout>0&&<span>的中時2車単合計 <strong style={{color:'var(--accent)',fontSize:'13px'}}>{totalPayout.toLocaleString()}円</strong></span>}
+            {totalTrifecta>0&&<span>3連単合計 <strong style={{color:'var(--accent)',fontSize:'13px'}}>{totalTrifecta.toLocaleString()}円</strong></span>}
+            {totalHits>0&&totalPayout>0&&<span>平均 <strong>{Math.round(totalPayout/totalHits).toLocaleString()}円/的中</strong></span>}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -2838,20 +2879,28 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
           <div className="card-title">{selectedDate} の該当レース詳細 ({selectedDetail.matches}件)</div>
           <div style={{maxHeight:'480px',overflowY:'auto'}}>
             {selectedDetail.items.map((it,i)=>(
-              <div key={i} style={{display:'flex',alignItems:'center',gap:'7px',padding:'7px 9px',marginBottom:'4px',
+              <div key={i} style={{padding:'7px 9px',marginBottom:'4px',
                 borderRadius:'6px',fontSize:'12px',
                 background:it.hit===true?'rgba(58,122,42,0.08)':it.hit===false?'rgba(187,34,0,0.06)':'rgba(160,106,10,0.05)',
                 border:`1px solid ${it.hit===true?'var(--green)':it.hit===false?'var(--red)':'var(--border)'}`}}>
-                <span style={{fontWeight:'700',minWidth:'56px'}}>{it.venue}</span>
-                <span style={{minWidth:'30px'}}>{it.raceNo}R</span>
-                <span style={{display:'flex',gap:'3px'}}>{it.linked.map(n=><Chip key={n} no={n} size="sm"/>)}</span>
-                <span style={{flex:1,fontSize:'11px',color:'var(--text2)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                  {it.sign.desc||it.sign.description||''}
-                </span>
-                {it.top3?(
-                  <><span style={{color:'var(--text2)'}}>{it.top3.join('-')}</span>
-                  <span style={{fontWeight:'700',color:it.hit?'var(--green)':'var(--red)'}}>{it.hit?'✅':'❌'}</span></>
-                ):<span style={{color:'var(--yellow)'}}>⏳</span>}
+                <div style={{display:'flex',alignItems:'center',gap:'7px'}}>
+                  <span style={{fontWeight:'700',minWidth:'56px'}}>{it.venue}</span>
+                  <span style={{minWidth:'30px'}}>{it.raceNo}R</span>
+                  <span style={{display:'flex',gap:'3px'}}>{it.linked.map(n=><Chip key={n} no={n} size="sm"/>)}</span>
+                  <span style={{flex:1,fontSize:'11px',color:'var(--text2)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                    {it.sign.desc||it.sign.description||''}
+                  </span>
+                  {it.top3?(
+                    <><span style={{color:'var(--text2)'}}>{it.top3.join('-')}</span>
+                    <span style={{fontWeight:'700',color:it.hit?'var(--green)':'var(--red)'}}>{it.hit?'✅':'❌'}</span></>
+                  ):<span style={{color:'var(--yellow)'}}>⏳</span>}
+                </div>
+                {it.top3&&(it.exactaPayout||it.trifectaPayout)&&(
+                  <div style={{display:'flex',gap:'10px',flexWrap:'wrap',marginTop:'3px',fontSize:'10px',color:'var(--text2)',paddingLeft:'56px'}}>
+                    {it.exactaPayout&&<span>2車単 <strong style={{color:'var(--accent)'}}>{it.exactaPayout.toLocaleString()}円</strong></span>}
+                    {it.trifectaPayout&&<span>3連単 <strong style={{color:'var(--accent)'}}>{it.trifectaPayout.toLocaleString()}円</strong></span>}
+                  </div>
+                )}
               </div>
             ))}
           </div>
