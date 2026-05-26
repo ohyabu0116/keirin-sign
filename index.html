@@ -2841,48 +2841,6 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
     downloadDataURL(dataURL,`keirin-sign-${today}.png`);
   };
 
-  const buildTweetText=(mode)=>{
-    // mode: 'morning' | 'result'
-    const items=buildTodayItems();
-    const sampleRaces=items.slice(0,3).map(it=>`${it.venue}${it.raceNo}R`).join(' / ');
-    if(mode==='morning'){
-      const lines=[
-        `🚴 本日の競輪サイン予想 (${today})`,
-        '',
-        `データに基づくサイン検出 → ${items.length}件`,
-      ];
-      if(allRate!=null)lines.push(`📊 過去30日的中率 ${allRate}% (${allHits}/${allWith})`);
-      if(sampleRaces)lines.push('',`対象: ${sampleRaces}${items.length>3?' ほか':''}`);
-      lines.push('','詳細は画像参照⬇️','','#競輪 #競輪予想 #ワイド');
-      return lines.join('\n');
-    }
-    // result
-    const todayRate=confirmed.length>0?Math.round(hits/confirmed.length*100):0;
-    let totalPayout=0;
-    analyzed.forEach(r=>r.alerts.filter(a=>a.connected===true).forEach(a=>{
-      if(r.exactaPayout)totalPayout+=r.exactaPayout;
-    }));
-    const lines=[
-      `🏆 本日の結果報告 (${today})`,
-      '',
-      `✅ ${hits} / ${confirmed.length} 的中 (${todayRate}%)`,
-    ];
-    if(totalPayout>0)lines.push(`💰 2車単的中配当合計 ${totalPayout.toLocaleString()}円`);
-    lines.push('','詳細は画像参照⬇️','','#競輪 #競輪予想');
-    return lines.join('\n');
-  };
-
-  const postToX=async(mode)=>{
-    // 画像生成・DLとX投稿画面オープンを同時実行
-    if(mode==='morning'){
-      await exportImage();
-    }else{
-      await exportResultImage();
-    }
-    const text=buildTweetText(mode);
-    const url=`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}`;
-    window.open(url,'_blank');
-  };
 
   const savePrediction=async()=>{
     // 当日の予想スナップショットを保存 (改竄防止用ハッシュ付き)
@@ -2960,13 +2918,8 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
           <button className="btn btn-ghost btn-sm" onClick={exportResultImage}>🏆 結果画像</button>
           <button className="btn btn-success btn-sm" onClick={savePrediction}>💾 予想を記録</button>
         </div>
-        <div style={{display:'flex',gap:'5px',alignItems:'center',flexWrap:'wrap',marginTop:'8px'}}>
-          <button className="btn btn-primary btn-sm" onClick={()=>postToX('morning')} style={{background:'#1DA1F2'}}>🐦 X 予想投稿</button>
-          <button className="btn btn-ghost btn-sm" onClick={()=>postToX('result')} style={{border:'1px solid #1DA1F2',color:'#1DA1F2'}}>🐦 X 結果投稿</button>
-        </div>
-        <div style={{fontSize:'10px',color:'var(--text2)',marginTop:'5px',lineHeight:'1.5'}}>
-          🐦 押すと画像DL＋X投稿画面が文章入りで開きます (画像はドラッグ&ドロップで添付)<br/>
-          💾 ハッシュ付き予想記録 (後出し否定の証拠)
+        <div style={{fontSize:'10px',color:'var(--text2)',marginTop:'5px'}}>
+          📸 X投稿用1080×1350画像 / 💾 ハッシュ付き予想記録 (後出し否定の証拠)
         </div>
       </div>
       {confirmed.length>0&&(
@@ -4118,7 +4071,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v1.1<br/>
+          競輪サイン予想 v1.2<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -4237,7 +4190,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.1</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.2</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
