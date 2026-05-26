@@ -319,6 +319,98 @@ async function clientFetchRacelist(dateStr,venueName,raceNo){
   return {races,encPrm:v.encPrm,grade:v.grade};
 }
 
+/* 本日データを自動取得する共通関数 (起動時・定期更新で使う) */
+async function autoFetchTodayData(opts={}){
+  const onProgress=opts.onProgress||(()=>{});
+  const dateStr=opts.date||new Date().toISOString().slice(0,10);
+  const force=opts.force||false;
+
+  // 既存の本日データをチェック
+  const existing=await dbAll('raceResults');
+  const todayExisting=existing.filter(r=>r.date===dateStr);
+  // 全レースに結果が揃っているかチェック
+  const allHaveResult=todayExisting.length>0&&todayExisting.every(r=>r.result1);
+
+  if(!force&&allHaveResult){
+    onProgress({status:'skipped',message:'本日データ取得済み (結果も全て揃っています)'});
+    return {saved:0,skipped:todayExisting.length,errors:0};
+  }
+
+  onProgress({status:'fetching',message:'本日の開催場を取得中...'});
+  let venues;
+  try{
+    venues=await clientFetchVenues(dateStr);
+  }catch(e){
+    onProgress({status:'error',message:'開催場取得失敗: '+e.message});
+    return {saved:0,skipped:0,errors:1};
+  }
+
+  if(venues.length===0){
+    onProgress({status:'done',message:'本日は開催無し'});
+    return {saved:0,skipped:0,errors:0};
+  }
+
+  let saved=0,errors=0;
+  for(let i=0;i<venues.length;i++){
+    const v=venues[i];
+    onProgress({status:'fetching',message:`${i+1}/${venues.length} ${v.name} を取得中...`,progress:i/venues.length});
+    try{
+      const [entriesJson,resultsJson]=await Promise.all([
+        _proxyFetch({type:'JSJ017',encp:v.encPrm}),
+        _proxyFetch({type:'JSJ018',encp:v.encPrm}).catch(()=>({})),
+      ]);
+      const resMap={};
+      ((resultsJson||{}).resultList||[]).forEach(r=>{
+        const rno=parseInt((r.rclblRaceNo||'').replace('R',''));
+        if(!rno)return;
+        const get=(lst,k,d='')=>lst&&lst[0]?lst[0][k]:d;
+        const pay3raw=(r.harai3renList?.[0]?.kingaku||'').replace(/[,円]/g,'');
+        const pay2raw=(r.harai2syaList?.[0]?.kingaku||'').replace(/[,円]/g,'');
+        const ninki3=(r.harai3renList?.[0]?.ninki||'').replace(/[()]/g,'');
+        const ninki2=(r.harai2syaList?.[0]?.ninki||'').replace(/[()]/g,'');
+        resMap[rno]={
+          result1:get(r.tyakui1List||[],'rclblSyaban'),
+          result2:get(r.tyakui2List||[],'rclblSyaban'),
+          result3:get(r.tyakui3List||[],'rclblSyaban'),
+          kimari1:get(r.tyakui1List||[],'rclblKimari',''),
+          kimari2:get(r.tyakui2List||[],'rclblKimari',''),
+          kimari3:get(r.tyakui3List||[],'rclblKimari',''),
+          trifectaCombo:r.harai3renList?.[0]?.kumi||'',
+          exactaCombo:r.harai2syaList?.[0]?.kumi||'',
+          trifectaPayout:pay3raw?Number(pay3raw):null,
+          exactaPayout:pay2raw?Number(pay2raw):null,
+          trifectaNinki:ninki3?Number(ninki3):null,
+          exactaNinki:ninki2?Number(ninki2):null,
+          raceRVPrm:r.raceRVPrm||r.raceTanpyoPrm||'',
+        };
+      });
+      const races=(entriesJson.rInfo||[]).map(r=>({
+        date:dateStr, venue:v.name, raceNo:Number(r.raceNo),
+        grade:v.grade||'', syumoku:r.syumoku||'',
+        denTime:r.denTime||'', stTime:r.stTime||'',
+        entries:(r.sInfo||[]).map(s=>({
+          syaban:Number(s.syaban),
+          regNo:String(s.senNo||'').padStart(6,'0'),
+          name:(s.senName||'').replace('　',' ').trim(),
+          prefecture:(s.huken||'').replace(/　/g,'').trim(),
+          kyaku:s.kyaku||'', note:s.assen||'',
+        })),
+        racerCount:(r.sInfo||[]).length,
+        ...(resMap[Number(r.raceNo)]||{})
+      }));
+      for(const race of races){
+        await dbPut('raceResults',race);
+        saved++;
+      }
+    }catch(e){
+      console.warn(`auto-fetch venue ${v.name} failed:`,e);
+      errors++;
+    }
+  }
+  onProgress({status:'done',message:`完了: ${saved}レース取得, エラー${errors}場`,progress:1});
+  return {saved,errors};
+}
+
 async function clientFetchWideForRace(raceEncp){
   /* JSJ012: 1レースの詳細配当 (ワイド含む)
      return: {widePayouts: {'1-2': 140, ...}, wideNinki: {'1-2': 1, ...}}*/
@@ -3412,7 +3504,7 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
 /* ====================================================================
    設定画面
 ==================================================================== */
-function SettingsScreen({connected,reload}){
+function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetch}){
   const[stats,setStats]=useState(null);
   useEffect(()=>{
     const load=async()=>{
@@ -3503,6 +3595,24 @@ function SettingsScreen({connected,reload}){
   return(
     <div>
       <div className="card">
+        <div className="card-title">自動取得</div>
+        <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'10px'}}>
+          <label style={{display:'flex',alignItems:'center',gap:'8px',cursor:'pointer',flex:1}}>
+            <input type="checkbox" checked={autoEnabled} onChange={e=>setAutoEnabled(e.target.checked)} style={{width:'18px',height:'18px'}}/>
+            <span style={{fontWeight:'700'}}>本日データを自動取得</span>
+          </label>
+          <button className="btn btn-sm btn-primary" onClick={()=>runAutoFetch(true)} disabled={!autoEnabled}>
+            今すぐ取得
+          </button>
+        </div>
+        <div style={{fontSize:'11px',color:'var(--text2)',lineHeight:'1.6'}}>
+          ✓ アプリ起動時に本日の出走表と結果を自動取得<br/>
+          ✓ <strong>10分ごとに自動更新</strong> (レース結果が出次第DBに反映)<br/>
+          ✓ 既に結果が揃っている場合はスキップ (帯域節約)
+        </div>
+      </div>
+
+      <div className="card">
         <div className="card-title">接続状態</div>
         <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
           <span style={{width:'10px',height:'10px',borderRadius:'50%',background:connected?'var(--green)':'var(--red)'}}/>
@@ -3537,7 +3647,7 @@ function SettingsScreen({connected,reload}){
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v0.8<br/>
+          競輪サイン予想 v0.9<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -3557,6 +3667,8 @@ function App(){
   const[discoveries,setDiscoveries]=useState([]);
   const[connected,setConnected]=useState(false);
   const[loaded,setLoaded]=useState(false);
+  const[autoFetchStatus,setAutoFetchStatus]=useState(null);
+  const[autoEnabled,setAutoEnabled]=useState(()=>localStorage.getItem('autoFetch')!=='off');
 
   const reload=useCallback(async()=>{
     const[p,r,s,d]=await Promise.all([
@@ -3564,6 +3676,19 @@ function App(){
     ]);
     setPlayers(p); setRaceResults(r); setSignConditions(s); setDiscoveries(d);
   },[]);
+
+  // 本日データの自動取得 (起動時 & 定期更新)
+  const runAutoFetch=useCallback(async(force=false)=>{
+    if(!autoEnabled)return;
+    const result=await autoFetchTodayData({
+      force,
+      onProgress:(p)=>{setAutoFetchStatus(p);},
+    });
+    if(result.saved>0)await reload();
+    // 5秒後にステータス非表示
+    setTimeout(()=>setAutoFetchStatus(null),5000);
+    return result;
+  },[autoEnabled,reload]);
 
   useEffect(()=>{
     initStorage().then(async m=>{
@@ -3598,9 +3723,24 @@ function App(){
           for(const id of toDel2){await dbDel('discoveries',id);}
         }
       }catch(e){console.warn('startup dedup failed:',e);}
-      reload().then(()=>setLoaded(true));
+      await reload();
+      setLoaded(true);
+      // 起動時に本日データを自動取得 (バックグラウンドで)
+      if(autoEnabled){
+        setTimeout(()=>runAutoFetch(false),500);
+      }
     });
-  },[reload]);
+  },[reload,autoEnabled,runAutoFetch]);
+
+  // 定期自動取得 (10分ごと)
+  useEffect(()=>{
+    if(!autoEnabled||!loaded)return;
+    const interval=setInterval(()=>{
+      console.log('[auto-fetch] 定期取得実行');
+      runAutoFetch(true);  // forceで結果更新を取りに行く
+    },10*60*1000);  // 10分
+    return ()=>clearInterval(interval);
+  },[autoEnabled,loaded,runAutoFetch]);
 
   if(!loaded) return(
     <div style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'100vh',color:'var(--text2)'}}>
@@ -3625,9 +3765,23 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v0.8</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v0.9</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
+      {autoFetchStatus&&(
+        <div style={{
+          position:'sticky',top:'56px',zIndex:99,padding:'6px 12px',fontSize:'11px',
+          background:autoFetchStatus.status==='error'?'rgba(187,34,0,0.1)':
+                     autoFetchStatus.status==='done'?'rgba(58,122,42,0.1)':
+                     'rgba(184,101,26,0.1)',
+          color:autoFetchStatus.status==='error'?'var(--red)':
+                autoFetchStatus.status==='done'?'var(--green)':'var(--accent)',
+          borderBottom:'1px solid var(--border)',
+          textAlign:'center',
+        }}>
+          {autoFetchStatus.status==='fetching'?'⏳':autoFetchStatus.status==='done'?'✓':'⚠️'} {autoFetchStatus.message}
+        </div>
+      )}
       <div className="content">
         {tab==='today'&&<TodayRacesScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
         {tab==='tally'&&<TallyScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
@@ -3636,7 +3790,10 @@ function App(){
         {tab==='input'&&<InputScreen reload={reload}/>}
         {tab==='sign'&&<SignConditionsScreen players={players} signConditions={signConditions} discoveries={discoveries} raceResults={raceResults} reload={reload}/>}
         {tab==='players'&&<PlayersScreen players={players} reload={reload}/>}
-        {tab==='settings'&&<SettingsScreen connected={connected} reload={reload}/>}
+        {tab==='settings'&&<SettingsScreen connected={connected} reload={reload}
+          autoEnabled={autoEnabled} setAutoEnabled={(v)=>{setAutoEnabled(v);localStorage.setItem('autoFetch',v?'on':'off');}}
+          runAutoFetch={runAutoFetch}
+        />}
       </div>
       <div className="tab-bar">
         {tabs.map(t=>(
