@@ -797,7 +797,26 @@ function mineClientSide(races, players, opts={}){
   });
   kyakuPattern.sort((a,b)=>b.rate-a.rate||b.trials-a.trials);
 
-  return {courseLink,venueSyaban:venueSyabanOut,kyakuSyaban:kyakuSyabanOut,kyakuPattern,playerSyabanLink,playerSyabanPairLink,playerComboLink};
+  // 重複統合: 同一regNoは最良(rate最高→trials最大)の1件のみ
+  const dedupByPlayer=(arr,getRegs)=>{
+    const seen=new Set();
+    const out=[];
+    arr.forEach(it=>{
+      const regs=getRegs(it).filter(Boolean);
+      if(regs.length===0){out.push(it);return;}
+      if(regs.some(r=>seen.has(r)))return;
+      regs.forEach(r=>seen.add(r));
+      out.push(it);
+    });
+    return out;
+  };
+  const playerSyabanLinkUnique=dedupByPlayer(playerSyabanLink,(it)=>[it.regNo]);
+  const playerSyabanPairLinkUnique=dedupByPlayer(playerSyabanPairLink,(it)=>[it.regNo]);
+  const playerComboLinkUnique=dedupByPlayer(playerComboLink,(it)=>[it.regA,it.regB]);
+  return {courseLink,venueSyaban:venueSyabanOut,kyakuSyaban:kyakuSyabanOut,kyakuPattern,
+    playerSyabanLink:playerSyabanLinkUnique,
+    playerSyabanPairLink:playerSyabanPairLinkUnique,
+    playerComboLink:playerComboLinkUnique};
 }
 
 // サインの自然言語定義を生成

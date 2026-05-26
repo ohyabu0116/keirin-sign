@@ -641,7 +641,15 @@ def mine_player_syaban_link(min_trials=3, min_rate=70):
                     'desc': f'{p.get("name", "?")} が{sy}番のとき → {linked_sy}番が3着以内 {rate}% ({cnt}/{len(races_for)})',
                 })
     out.sort(key=lambda x: (-x['rate'], -x['trials']))
-    return out
+    # 同一regNoは最良1件のみ
+    seen = set()
+    unique = []
+    for it in out:
+        rn = it.get('regNo')
+        if rn and rn in seen: continue
+        if rn: seen.add(rn)
+        unique.append(it)
+    return unique
 
 def mine_player_syaban_pair_link(min_trials=3, min_rate=70):
     """「ある選手が○番のとき、△番と□番が両方3着以内」という2車連動を集計
@@ -692,7 +700,15 @@ def mine_player_syaban_pair_link(min_trials=3, min_rate=70):
                         'desc': f'{p.get("name","?")} が{sy}番のとき → {n1}・{n2}両方3着以内 {rate}% ({cnt}/{len(races_for)})',
                     })
     out.sort(key=lambda x: (-x['rate'], -x['trials']))
-    return out
+    # 同一regNoは最良の1件のみ (rate最高→trials最大の順)
+    seen = set()
+    unique = []
+    for it in out:
+        rn = it.get('regNo')
+        if rn and rn in seen: continue
+        if rn: seen.add(rn)
+        unique.append(it)
+    return unique
 
 def mine_venue_syaban(min_trials=10, min_rate=90):
     """競輪場×車番 別の3着以内率 (90%以上=必ず絡む車番) を集計"""
