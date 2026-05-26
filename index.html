@@ -3502,6 +3502,206 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
 }
 
 /* ====================================================================
+   データ検証画面 (A整合性 + B信頼性 + C異常値)
+==================================================================== */
+function ValidationScreen({raceResults,signConditions,discoveries=[],players,reload}){
+  const[running,setRunning]=useState(false);
+  const[result,setResult]=useState(null);
+
+  const runChecks=async()=>{
+    setRunning(true);
+    await new Promise(r=>setTimeout(r,50));
+
+    // A. データ整合性
+    const A={};
+    const raceMap={};
+    const dups=[];
+    raceResults.forEach(r=>{
+      const k=`${r.date||''}|${r.venue||''}|${r.raceNo||''}`;
+      if(raceMap[k])dups.push(r);
+      else raceMap[k]=r;
+    });
+    A.duplicates=dups;
+    A.noResult=raceResults.filter(r=>r.entries&&r.entries.length>0&&!r.result1&&r.date<new Date().toISOString().slice(0,10));
+    A.noEntries=raceResults.filter(r=>r.result1&&(!r.entries||r.entries.length===0));
+    A.invalidResult=raceResults.filter(r=>{
+      if(!r.result1)return false;
+      const t3=[r.result1,r.result2,r.result3].map(Number);
+      return t3.some(n=>n<1||n>9||isNaN(n));
+    });
+    A.countMismatch=raceResults.filter(r=>r.entries&&r.racerCount&&r.entries.length!==r.racerCount);
+    A.noPayoutWithResult=raceResults.filter(r=>r.result1&&!r.exactaPayout&&!r.trifectaPayout);
+    A.todayMissing=raceResults.filter(r=>r.date===new Date().toISOString().slice(0,10)&&!r.result1);
+
+    // B. サイン信頼性 (採用済みのみ再計算)
+    const B={drifted:[],ok:[],lowTrials:[]};
+    const validRaces=dedupRaces(raceResults.filter(r=>r.result1&&r.entries));
+    const uniqueSigns=dedupSigns(discoveries.filter(d=>d.active!==false));
+    for(const sign of uniqueSigns){
+      let trials=0,hits=0;
+      for(const r of validRaces){
+        const ents=r.entries||[];
+        const top3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+        if(sign.type==='PLAYER_SYABAN_LINK'){
+          const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===Number(sign.syaban));
+          if(!myE)continue;
+          trials++;
+          if(top3.includes(Number(sign.linkedSyaban)))hits++;
+        }else if(sign.type==='PLAYER_SYABAN_PAIR_LINK'){
+          const pair=Array.isArray(sign.linkedPair)?sign.linkedPair.map(Number):[];
+          const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===Number(sign.syaban));
+          if(!myE||pair.length!==2)continue;
+          trials++;
+          if(pair.every(n=>top3.includes(n)))hits++;
+        }
+      }
+      const current=trials>0?Math.round(hits/trials*100):null;
+      const saved=sign.rate||0;
+      const drift=current!=null&&Math.abs(current-saved)>=10;
+      const lowTrials=trials<5;
+      if(lowTrials)B.lowTrials.push({sign,trials,hits,current});
+      else if(drift)B.drifted.push({sign,trials,hits,current,saved});
+      else B.ok.push({sign,trials,hits,current});
+    }
+
+    // C. 異常値検出
+    const C={};
+    const exPays=raceResults.map(r=>r.exactaPayout).filter(Boolean).sort((a,b)=>a-b);
+    const trPays=raceResults.map(r=>r.trifectaPayout).filter(Boolean).sort((a,b)=>a-b);
+    const exMed=exPays[Math.floor(exPays.length/2)]||0;
+    const trMed=trPays[Math.floor(trPays.length/2)]||0;
+    C.medianExacta=exMed;
+    C.medianTrifecta=trMed;
+    C.highExacta=raceResults.filter(r=>r.exactaPayout&&r.exactaPayout>exMed*10).sort((a,b)=>b.exactaPayout-a.exactaPayout).slice(0,10);
+    C.highTrifecta=raceResults.filter(r=>r.trifectaPayout&&r.trifectaPayout>trMed*15).sort((a,b)=>b.trifectaPayout-a.trifectaPayout).slice(0,10);
+    C.tooFewEntries=raceResults.filter(r=>r.entries&&r.entries.length>0&&r.entries.length<5);
+    // 選手DB整合性
+    const playersByReg={};
+    players.forEach(p=>{if(p.regNo){const rn=String(p.regNo).padStart(6,'0');(playersByReg[rn]=playersByReg[rn]||[]).push(p);}});
+    C.dupPlayers=Object.entries(playersByReg).filter(([_,arr])=>arr.length>=2).map(([k,arr])=>({regNo:k,entries:arr}));
+
+    setResult({A,B,C,timestamp:new Date().toISOString()});
+    setRunning(false);
+  };
+
+  const updateSignRate=async(item)=>{
+    await dbPut('discoveries',{...item.sign,rate:item.current,trials:item.trials,hits:item.hits});
+    reload();
+    alert(`サインを更新しました\n${item.saved}% → ${item.current}%`);
+  };
+
+  const removeAllInvalid=async()=>{
+    if(!result?.A?.invalidResult.length)return;
+    if(!confirm(`不正な結果データ ${result.A.invalidResult.length}件 を削除しますか?`))return;
+    for(const r of result.A.invalidResult){await dbDel('raceResults',r.id);}
+    alert('削除しました'); reload();
+  };
+
+  const Card=({title,status,children})=>{
+    const colorMap={ok:'var(--green)',warn:'var(--yellow)',err:'var(--red)'};
+    const c=colorMap[status]||'var(--border)';
+    const icon=status==='ok'?'✅':status==='warn'?'⚠️':status==='err'?'❌':'▫';
+    return(
+      <div className="card" style={{borderColor:c,borderWidth:'1px'}}>
+        <div style={{fontSize:'13px',fontWeight:'700',marginBottom:'8px',color:c}}>{icon} {title}</div>
+        {children}
+      </div>
+    );
+  };
+
+  const ListMini=({items,render,max=5})=>{
+    if(items.length===0)return null;
+    return(
+      <div style={{maxHeight:'180px',overflowY:'auto',marginTop:'6px'}}>
+        {items.slice(0,max).map((it,i)=><div key={i} style={{fontSize:'11px',padding:'3px 0',color:'var(--text2)'}}>{render(it)}</div>)}
+        {items.length>max&&<div style={{fontSize:'10px',color:'var(--text2)',marginTop:'4px'}}>...他 {items.length-max}件</div>}
+      </div>
+    );
+  };
+
+  return(
+    <div>
+      <div className="card">
+        <div className="card-title">データ検証</div>
+        <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
+          A. データ整合性 (欠損・重複・範囲外)<br/>
+          B. 採用サインの実DB再計算 (連動率の乖離検出)<br/>
+          C. 異常配当・取得失敗・選手DB重複の検出
+        </p>
+        <button className="btn btn-primary" onClick={runChecks} disabled={running} style={{width:'100%'}}>
+          {running?'⏳ 検証中...':'▶ 全検証を実行'}
+        </button>
+        {result&&<div style={{fontSize:'10px',color:'var(--text2)',marginTop:'6px'}}>最終検証: {new Date(result.timestamp).toLocaleString('ja-JP')}</div>}
+      </div>
+
+      {result&&(<>
+        {/* A. データ整合性 */}
+        <div className="section-title">A. データ整合性</div>
+        <Card title={`重複レース ${result.A.duplicates.length}件`} status={result.A.duplicates.length===0?'ok':'warn'}>
+          {result.A.duplicates.length>0&&<div style={{fontSize:'11px',color:'var(--text2)'}}>設定タブの「🧹 重複レースを削除」で除去できます</div>}
+        </Card>
+        <Card title={`結果未取得 (過去日) ${result.A.noResult.length}件`} status={result.A.noResult.length===0?'ok':'warn'}>
+          <ListMini items={result.A.noResult.sort((a,b)=>(b.date||'').localeCompare(a.date||''))} render={r=>`${r.date} ${r.venue}${r.raceNo}R`}/>
+        </Card>
+        <Card title={`本日 結果未取得 ${result.A.todayMissing.length}件`} status={result.A.todayMissing.length===0?'ok':'warn'}>
+          {result.A.todayMissing.length>0&&<div style={{fontSize:'11px',color:'var(--text2)'}}>レース未開催 or 取得待ち</div>}
+        </Card>
+        <Card title={`結果車番が範囲外 ${result.A.invalidResult.length}件`} status={result.A.invalidResult.length===0?'ok':'err'}>
+          <ListMini items={result.A.invalidResult} render={r=>`${r.date} ${r.venue}${r.raceNo}R: ${r.result1}-${r.result2}-${r.result3}`}/>
+          {result.A.invalidResult.length>0&&<button className="btn btn-sm btn-danger" style={{marginTop:'6px'}} onClick={removeAllInvalid}>不正データを一括削除</button>}
+        </Card>
+        <Card title={`車立て数不一致 ${result.A.countMismatch.length}件`} status={result.A.countMismatch.length===0?'ok':'warn'}>
+          <ListMini items={result.A.countMismatch} render={r=>`${r.date} ${r.venue}${r.raceNo}R: entries=${r.entries.length} racerCount=${r.racerCount}`}/>
+        </Card>
+        <Card title={`結果あるが配当なし ${result.A.noPayoutWithResult.length}件`} status={result.A.noPayoutWithResult.length===0?'ok':'warn'}>
+          <div style={{fontSize:'11px',color:'var(--text2)'}}>古いデータでは配当情報が無い場合あり (再取得で改善)</div>
+        </Card>
+
+        {/* B. サイン信頼性 */}
+        <div className="section-title" style={{marginTop:'18px'}}>B. サイン信頼性再検証</div>
+        <Card title={`正常 ${result.B.ok.length}件`} status='ok'>
+          <div style={{fontSize:'11px',color:'var(--text2)'}}>連動率が保存時と±10%以内</div>
+        </Card>
+        <Card title={`連動率の乖離 ${result.B.drifted.length}件`} status={result.B.drifted.length===0?'ok':'warn'}>
+          {result.B.drifted.map((it,i)=>(
+            <div key={i} style={{padding:'7px 9px',marginBottom:'4px',background:'rgba(160,106,10,0.06)',borderRadius:'5px',fontSize:'12px'}}>
+              <div>{describeSign(it.sign)}</div>
+              <div style={{marginTop:'4px',color:'var(--text2)'}}>
+                保存 <strong style={{color:'var(--text)'}}>{it.saved}%</strong> → 現在 <strong style={{color:it.current>=it.saved?'var(--green)':'var(--red)'}}>{it.current}%</strong> ({it.hits}/{it.trials}回)
+              </div>
+              <button className="btn btn-sm btn-primary" style={{marginTop:'5px'}} onClick={()=>updateSignRate(it)}>現在値で更新</button>
+            </div>
+          ))}
+        </Card>
+        <Card title={`試行回数不足 ${result.B.lowTrials.length}件`} status={result.B.lowTrials.length===0?'ok':'warn'}>
+          <ListMini items={result.B.lowTrials} render={it=>`試行${it.trials}回 (5回未満) - ${describeSign(it.sign).slice(0,40)}...`}/>
+          <div style={{fontSize:'10px',color:'var(--text2)',marginTop:'4px'}}>※ 試行5回未満のサインは統計的に弱い (慎重に運用)</div>
+        </Card>
+
+        {/* C. 異常値 */}
+        <div className="section-title" style={{marginTop:'18px'}}>C. 異常値検出</div>
+        <Card title={`2車単 超高配当 ${result.C.highExacta.length}件`} status={result.C.highExacta.length===0?'ok':'warn'}>
+          <div style={{fontSize:'10px',color:'var(--text2)',marginBottom:'4px'}}>中央値 {result.C.medianExacta.toLocaleString()}円 の10倍以上</div>
+          <ListMini items={result.C.highExacta} render={r=>`${r.date} ${r.venue}${r.raceNo}R: ${r.exactaCombo} ${r.exactaPayout.toLocaleString()}円${r.exactaNinki?` (${r.exactaNinki}人気)`:''}`}/>
+        </Card>
+        <Card title={`3連単 超高配当 ${result.C.highTrifecta.length}件`} status={result.C.highTrifecta.length===0?'ok':'warn'}>
+          <div style={{fontSize:'10px',color:'var(--text2)',marginBottom:'4px'}}>中央値 {result.C.medianTrifecta.toLocaleString()}円 の15倍以上</div>
+          <ListMini items={result.C.highTrifecta} render={r=>`${r.date} ${r.venue}${r.raceNo}R: ${r.trifectaCombo} ${r.trifectaPayout.toLocaleString()}円${r.trifectaNinki?` (${r.trifectaNinki}人気)`:''}`}/>
+        </Card>
+        <Card title={`出走数が異常に少ない ${result.C.tooFewEntries.length}件`} status={result.C.tooFewEntries.length===0?'ok':'warn'}>
+          <ListMini items={result.C.tooFewEntries} render={r=>`${r.date} ${r.venue}${r.raceNo}R: ${r.entries.length}車`}/>
+          <div style={{fontSize:'10px',color:'var(--text2)',marginTop:'4px'}}>※ 取得失敗の可能性。再取得で改善するかも</div>
+        </Card>
+        <Card title={`同登番の選手が複数 ${result.C.dupPlayers.length}件`} status={result.C.dupPlayers.length===0?'ok':'err'}>
+          <ListMini items={result.C.dupPlayers} render={g=>`登番${g.regNo}: ${g.entries.length}件 (${g.entries.map(p=>p.name).join(', ')})`}/>
+          {result.C.dupPlayers.length>0&&<div style={{fontSize:'10px',color:'var(--text2)',marginTop:'4px'}}>選手タブの「🔍 重複を検出」で個別マージしてください</div>}
+        </Card>
+      </>)}
+    </div>
+  );
+}
+
+/* ====================================================================
    設定画面
 ==================================================================== */
 function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetch}){
@@ -3647,7 +3847,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v0.9<br/>
+          競輪サイン予想 v1.0<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -3759,13 +3959,14 @@ function App(){
     {id:'input',icon:'📥',label:'入力'},
     {id:'sign',icon:'🌟',label:'サイン'},
     {id:'players',icon:'🚴',label:'選手'},
+    {id:'check',icon:'🔍',label:'検証'},
     {id:'settings',icon:'⚙️',label:'設定'},
   ];
 
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v0.9</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.0</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
@@ -3790,6 +3991,7 @@ function App(){
         {tab==='input'&&<InputScreen reload={reload}/>}
         {tab==='sign'&&<SignConditionsScreen players={players} signConditions={signConditions} discoveries={discoveries} raceResults={raceResults} reload={reload}/>}
         {tab==='players'&&<PlayersScreen players={players} reload={reload}/>}
+        {tab==='check'&&<ValidationScreen raceResults={raceResults} signConditions={signConditions} discoveries={discoveries} players={players} reload={reload}/>}
         {tab==='settings'&&<SettingsScreen connected={connected} reload={reload}
           autoEnabled={autoEnabled} setAutoEnabled={(v)=>{setAutoEnabled(v);localStorage.setItem('autoFetch',v?'on':'off');}}
           runAutoFetch={runAutoFetch}
