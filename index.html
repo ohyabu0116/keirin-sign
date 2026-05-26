@@ -382,6 +382,8 @@ const COND_TYPES=[
   {value:'COURSE_LINK',label:'コース連動',emoji:'🔗',desc:'同一選手・同一車番が出走時、N走前の決まり目連動'},
   {value:'PLAYER_SYABAN_LINK',label:'選手×車番連動',emoji:'🎯',desc:'特定選手が特定車番に入ると、別の車番が高確率で3着以内'},
   {value:'PLAYER_SYABAN_PAIR_LINK',label:'選手×車番→2車連動',emoji:'🎯🎯',desc:'特定選手が特定車番のとき、2車が両方3着以内'},
+  {value:'PLAYER_COMBO_LINK',label:'2選手複合→1車連動',emoji:'⚡',desc:'2人の選手×車番が同時出走時、特定車番が3着以内'},
+  {value:'PLAYER_COMBO_PAIR_LINK',label:'2選手複合→2車連動',emoji:'⚡⚡',desc:'2人の選手×車番が同時出走時、2車両方3着以内'},
   {value:'LINE_LINK',label:'ライン連動',emoji:'🚴',desc:'強ライン構成時の自動連動 (手動マーキング)'},
   {value:'RACER_SIGN',label:'サインレーサー',emoji:'🌟',desc:'特定選手出走時のサイン'},
   {value:'KYAKU_PATTERN',label:'脚質構成',emoji:'📊',desc:'構成パターンによる勝者脚質予測'},
@@ -641,6 +643,107 @@ function mineClientSide(races, players, opts={}){
   });
   playerSyabanPairLink.sort((a,b)=>b.rate-a.rate||b.trials-a.trials);
 
+  // 4.8 複合条件: 2人の選手×車番が同時出走 → 連動車番 (90%+のみ)
+  // 既存の (regNo, syaban) ペア履歴(psHist)を再利用して、
+  // 同レース内で2つの (regNo, syaban) 組み合わせが出現する場合を集計
+  const playerComboLink=[];
+  if(opts.enableCombo!==false){
+    // race ID -> [(regNo, syaban, name), ...]
+    const raceToEntries={};
+    validRaces.forEach((r,idx)=>{
+      raceToEntries[idx]=[];
+      (r.entries||[]).forEach(e=>{
+        const rn=String(e.regNo||'').padStart(6,'0');
+        const sy=Number(e.syaban);
+        if(rn&&sy)raceToEntries[idx].push({rn,sy});
+      });
+    });
+
+    // ペア出現履歴を構築 (両条件を同時に満たすレース)
+    // pairHist[key] = [race]; key = "regA|syA~~regB|syB" (sorted)
+    const pairHist={};
+    validRaces.forEach((r,idx)=>{
+      const ents=raceToEntries[idx];
+      for(let i=0;i<ents.length;i++){
+        for(let j=i+1;j<ents.length;j++){
+          const ka=`${ents[i].rn}|${ents[i].sy}`;
+          const kb=`${ents[j].rn}|${ents[j].sy}`;
+          const key=ka<kb?`${ka}~~${kb}`:`${kb}~~${ka}`;
+          (pairHist[key]=pairHist[key]||[]).push(r);
+        }
+      }
+    });
+
+    // 各ペアで連動車番を計算
+    const comboThreshold=Math.max(minTrials-2,3);
+    const comboMinRate=Math.max(minRate,90); // 複合は90%以上に絞る
+    Object.entries(pairHist).forEach(([key,races])=>{
+      if(races.length<comboThreshold)return;
+      const [partA,partB]=key.split('~~');
+      const [rnA,syA]=partA.split('|'); const syaA=Number(syA);
+      const [rnB,syB]=partB.split('|'); const syaB=Number(syB);
+      const top3Sets=races.map(r=>new Set([r.result1,r.result2,r.result3].filter(Boolean).map(Number)));
+      // 単独連動（1車）
+      for(let n=1;n<=9;n++){
+        if(n===syaA||n===syaB)continue;
+        const cnt=top3Sets.filter(t3=>t3.has(n)).length;
+        if(cnt===0)continue;
+        const rate=Math.round(cnt/races.length*100);
+        if(rate>=comboMinRate){
+          const pA=playerMap[rnA], pB=playerMap[rnB];
+          const hitExamples=races.filter(r=>{
+            const t3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+            return t3.includes(n);
+          }).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,8).map(buildExample);
+          const missExamples=races.filter(r=>{
+            const t3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+            return !t3.includes(n);
+          }).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,5).map(buildExample);
+          playerComboLink.push({
+            type:'PLAYER_COMBO_LINK',
+            regA:rnA, syaA, playerNameA:pA?pA.name:'?',
+            regB:rnB, syaB, playerNameB:pB?pB.name:'?',
+            linkedSyaban:n, linkedPair:null,
+            trials:races.length, hits:cnt, rate,
+            examples:hitExamples, misses:missExamples,
+            desc:`${pA?pA.name:'?'}が${syaA}番 かつ ${pB?pB.name:'?'}が${syaB}番のとき → ${n}番3着以内 ${rate}% (${cnt}/${races.length})`,
+          });
+        }
+      }
+      // 2車連動（2車両方3着内）
+      for(let n1=1;n1<=9;n1++){
+        if(n1===syaA||n1===syaB)continue;
+        for(let n2=n1+1;n2<=9;n2++){
+          if(n2===syaA||n2===syaB)continue;
+          const cnt=top3Sets.filter(t3=>t3.has(n1)&&t3.has(n2)).length;
+          if(cnt===0)continue;
+          const rate=Math.round(cnt/races.length*100);
+          if(rate>=comboMinRate){
+            const pA=playerMap[rnA], pB=playerMap[rnB];
+            const hitExamples=races.filter(r=>{
+              const t3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+              return t3.includes(n1)&&t3.includes(n2);
+            }).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,8).map(buildExample);
+            const missExamples=races.filter(r=>{
+              const t3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+              return !(t3.includes(n1)&&t3.includes(n2));
+            }).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,5).map(buildExample);
+            playerComboLink.push({
+              type:'PLAYER_COMBO_PAIR_LINK',
+              regA:rnA, syaA, playerNameA:pA?pA.name:'?',
+              regB:rnB, syaB, playerNameB:pB?pB.name:'?',
+              linkedSyaban:null, linkedPair:[n1,n2],
+              trials:races.length, hits:cnt, rate,
+              examples:hitExamples, misses:missExamples,
+              desc:`${pA?pA.name:'?'}が${syaA}番 かつ ${pB?pB.name:'?'}が${syaB}番のとき → ${n1}・${n2}両方3着以内 ${rate}% (${cnt}/${races.length})`,
+            });
+          }
+        }
+      }
+    });
+    playerComboLink.sort((a,b)=>b.rate-a.rate||b.trials-a.trials);
+  }
+
   // 4. 脚質構成パターン
   const patterns={};
   validRaces.forEach(r=>{
@@ -672,7 +775,7 @@ function mineClientSide(races, players, opts={}){
   });
   kyakuPattern.sort((a,b)=>b.rate-a.rate||b.trials-a.trials);
 
-  return {courseLink,venueSyaban:venueSyabanOut,kyakuSyaban:kyakuSyabanOut,kyakuPattern,playerSyabanLink,playerSyabanPairLink};
+  return {courseLink,venueSyaban:venueSyabanOut,kyakuSyaban:kyakuSyabanOut,kyakuPattern,playerSyabanLink,playerSyabanPairLink,playerComboLink};
 }
 
 function classifyGrade(syumoku){
@@ -820,6 +923,34 @@ function runAnalysis({entries,raceResults,signConditions,players,discoveries=[],
     alerts.push({type:'PLAYER_SYABAN_PAIR_LINK_AUTO',status:allPresent?'ALERT':'NO_TARGET',
       regNo:d.regNo,pName:d.playerName||'?',syaban:myE.syaban,
       linkedPair:pair,rate:d.rate,trials:d.trials,desc:d.desc});
+    if(allPresent)pair.forEach(n=>linkedSet.add(n));
+  });
+
+  // 自動発見: 複合条件 2選手→1車連動
+  discoveries.filter(d=>d.type==='PLAYER_COMBO_LINK').forEach(d=>{
+    const eA=entries.find(e=>String(e.regNo)===String(d.regA)&&Number(e.syaban)===Number(d.syaA));
+    const eB=entries.find(e=>String(e.regNo)===String(d.regB)&&Number(e.syaban)===Number(d.syaB));
+    if(!eA||!eB)return;
+    const linkedNo=Number(d.linkedSyaban);
+    const linkedEntry=entries.find(e=>Number(e.syaban)===linkedNo&&e.regNo);
+    alerts.push({type:'PLAYER_COMBO_LINK_AUTO',status:linkedEntry?'ALERT':'NO_TARGET',
+      pName:`${d.playerNameA}(${d.syaA}) × ${d.playerNameB}(${d.syaB})`,
+      syaban:null,linkedSyaban:linkedNo,
+      rate:d.rate,trials:d.trials,desc:d.desc});
+    if(linkedEntry)linkedSet.add(linkedNo);
+  });
+
+  // 自動発見: 複合条件 2選手→2車連動
+  discoveries.filter(d=>d.type==='PLAYER_COMBO_PAIR_LINK').forEach(d=>{
+    const eA=entries.find(e=>String(e.regNo)===String(d.regA)&&Number(e.syaban)===Number(d.syaA));
+    const eB=entries.find(e=>String(e.regNo)===String(d.regB)&&Number(e.syaban)===Number(d.syaB));
+    if(!eA||!eB)return;
+    const pair=Array.isArray(d.linkedPair)?d.linkedPair.map(Number):[];
+    const allPresent=pair.length===2&&pair.every(n=>entries.find(e=>Number(e.syaban)===n&&e.regNo));
+    alerts.push({type:'PLAYER_COMBO_PAIR_LINK_AUTO',status:allPresent?'ALERT':'NO_TARGET',
+      pName:`${d.playerNameA}(${d.syaA}) × ${d.playerNameB}(${d.syaB})`,
+      syaban:null,linkedPair:pair,
+      rate:d.rate,trials:d.trials,desc:d.desc});
     if(allPresent)pair.forEach(n=>linkedSet.add(n));
   });
 
@@ -1572,6 +1703,35 @@ function SignConditionsScreen({players,signConditions,discoveries=[],reload,race
                   <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}} onClick={()=>adoptDiscovery(d)}>採用</button>
                 </div>
               ))}
+              <div className="section-title" style={{marginTop:'14px'}}>⚡⚡ 複合条件 (2選手) → 連動車番 ({discResult.playerComboLink?.length||0}件)</div>
+              <div style={{fontSize:'10px',color:'var(--text2)',marginBottom:'6px'}}>※連動率90%以上、根拠2件揃ったもののみ</div>
+              {(discResult.playerComboLink||[]).slice(0,50).map((d,i)=>(
+                <div key={i} className="hist-item" style={{borderColor:'var(--accent)',borderWidth:'2px'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'5px',flexWrap:'wrap',fontSize:'12px'}}>
+                    <Chip no={d.syaA} size="sm"/>
+                    <span style={{fontWeight:'700'}}>{d.playerNameA}</span>
+                    <span style={{color:'var(--text2)',fontWeight:'700'}}>+</span>
+                    <Chip no={d.syaB} size="sm"/>
+                    <span style={{fontWeight:'700'}}>{d.playerNameB}</span>
+                    <span style={{color:'var(--text2)'}}>→</span>
+                    {d.linkedPair?<>
+                      <Chip no={d.linkedPair[0]} size="sm"/>+<Chip no={d.linkedPair[1]} size="sm"/>
+                      <span style={{fontSize:'10px',color:'var(--text2)'}}>両方</span>
+                    </>:<Chip no={d.linkedSyaban} size="sm"/>}
+                    <span style={{marginLeft:'auto',color:'var(--green)',fontWeight:'900',fontSize:'14px'}}>{d.rate}%</span>
+                  </div>
+                  <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+                    試行{d.trials}回 ({d.hits}回的中)
+                  </div>
+                  <ExampleList examples={d.examples} misses={d.misses}/>
+                  <button className="btn btn-primary btn-sm" style={{marginTop:'6px'}}
+                    onClick={async()=>{
+                      await dbPut('discoveries',{...d,active:true,adoptedAt:Date.now()});
+                      reload();alert('採用しました');
+                    }}>採用</button>
+                </div>
+              ))}
+
               <div className="section-title" style={{marginTop:'14px'}}>🎯🎯 選手×車番→2車連動 ({discResult.playerSyabanPairLink?.length||0}件)</div>
               {(discResult.playerSyabanPairLink||[]).slice(0,40).map((d,i)=>(
                 <div key={i} className="hist-item">
