@@ -411,6 +411,158 @@ async function autoFetchTodayData(opts={}){
   return {saved,errors};
 }
 
+/* ROI+ サイン総動員マイニング
+   全2車連動パターンを抽出し、実際のワイド配当からROIを計算、
+   連動率80%+ AND ROI 100%+ のものだけ返す */
+async function mineROIPositive(races,players,opts={}){
+  const minRate=opts.minRate||80;
+  const minROI=opts.minROI||100;
+  const minTrials=opts.minTrials||3;
+  const onProgress=opts.onProgress||(()=>{});
+  const validRaces=dedupRaces(races).filter(r=>r.result1&&r.entries&&r.entries.length>0);
+  const playerMap={};
+  players.forEach(p=>{if(p.regNo)playerMap[String(p.regNo).padStart(6,'0')]=p;});
+  validRaces.forEach(r=>{
+    (r.entries||[]).forEach(e=>{
+      const rn=String(e.regNo||'').padStart(6,'0');
+      if(rn&&!playerMap[rn]&&e.name)playerMap[rn]={regNo:rn,name:e.name};
+    });
+  });
+
+  // 1) 全パターン抽出 (PLAYER_SYABAN_PAIR_LINK のみ、最初は速いやつから)
+  onProgress({phase:'mining',message:`${validRaces.length}件のレースから2車連動パターンを抽出中...`,progress:0});
+  const psHist={};
+  validRaces.forEach(r=>{
+    (r.entries||[]).forEach(e=>{
+      const rn=String(e.regNo||'').padStart(6,'0');
+      const sy=Number(e.syaban);
+      if(!rn||!sy)return;
+      (psHist[`${rn}|${sy}`]=psHist[`${rn}|${sy}`]||[]).push(r);
+    });
+  });
+
+  const candidates=[];
+  Object.entries(psHist).forEach(([key,races_])=>{
+    if(races_.length<minTrials)return;
+    const [rn,syStr]=key.split('|');
+    const sy=Number(syStr);
+    const top3Sets=races_.map(r=>new Set([r.result1,r.result2,r.result3].filter(Boolean).map(Number)));
+    for(let n1=1;n1<=9;n1++){
+      if(n1===sy)continue;
+      for(let n2=n1+1;n2<=9;n2++){
+        if(n2===sy)continue;
+        const hits=top3Sets.filter(t3=>t3.has(n1)&&t3.has(n2)).length;
+        if(hits<minTrials)continue;
+        const rate=Math.round(hits/races_.length*100);
+        if(rate<minRate)continue;
+        candidates.push({
+          type:'PLAYER_SYABAN_PAIR_LINK',
+          regNo:rn,
+          playerName:(playerMap[rn]||{}).name||'?',
+          syaban:sy,linkedPair:[n1,n2],
+          trials:races_.length,hits,rate,
+          _matchedRaces:races_,  // 内部用 (DBに保存しない)
+        });
+      }
+    }
+  });
+
+  onProgress({phase:'mining',message:`${candidates.length}件の候補抽出完了 → ROI計算開始`,progress:0});
+
+  // 2) 各候補のROI計算 (ワイド配当を取得)
+  const roiPositive=[];
+  const venueEncCache={};
+  const startedAt=Date.now();
+
+  for(let i=0;i<candidates.length;i++){
+    if(opts.cancelRef&&opts.cancelRef.cancelled)break;
+    const sign=candidates[i];
+    const pair=sign.linkedPair;
+    const key=pair.join('-');
+    let totalPayout=0,hitWithPayout=0,fetchedNew=0,skippedNoEnc=0;
+    const enriched=[];
+
+    for(const r of sign._matchedRaces){
+      const top3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+      const isHit=pair.every(n=>top3.includes(n));
+      if(!isHit){enriched.push({race:r,isHit:false,pay:null});continue;}
+      let pay=null;
+      if(r.widePayouts&&r.widePayouts[key]!=null){
+        pay=r.widePayouts[key];
+      }else{
+        let rvPrm=r.raceRVPrm;
+        if(!rvPrm){
+          // 過去レースの場合はvenue経由で取得
+          const cacheKey=`${r.date}|${r.venue}`;
+          if(!(cacheKey in venueEncCache)){
+            try{
+              const venues=await clientFetchVenues(r.date);
+              const v=venues.find(x=>x.name===r.venue);
+              if(v&&v.encPrm){
+                const j=await _proxyFetch({type:'JSJ018',encp:v.encPrm});
+                const map={};
+                (j.resultList||[]).forEach(rr=>{
+                  const rno=parseInt((rr.rclblRaceNo||'').replace('R',''));
+                  if(rno&&(rr.raceRVPrm||rr.raceTanpyoPrm))map[rno]=rr.raceRVPrm||rr.raceTanpyoPrm;
+                });
+                venueEncCache[cacheKey]=map;
+              }else{venueEncCache[cacheKey]={};}
+            }catch(e){venueEncCache[cacheKey]={};}
+          }
+          rvPrm=venueEncCache[cacheKey][r.raceNo];
+        }
+        if(rvPrm){
+          try{
+            const w=await clientFetchWideForRace(rvPrm);
+            pay=w.widePayouts[key];
+            if(Object.keys(w.widePayouts).length>0){
+              await dbPut('raceResults',{...r,widePayouts:w.widePayouts,wideNinki:w.wideNinki,raceRVPrm:rvPrm});
+              fetchedNew++;
+            }
+          }catch(e){}
+        }else{skippedNoEnc++;}
+      }
+      if(pay!=null){totalPayout+=pay;hitWithPayout++;}
+      enriched.push({race:r,isHit:true,pay});
+    }
+
+    const trials=sign._matchedRaces.length;
+    const hits=enriched.filter(e=>e.isHit).length;
+    const totalBet=trials*100;
+    const roi=totalBet>0?totalPayout/totalBet*100:0;
+
+    if(roi>=minROI&&hitWithPayout>=Math.min(minTrials,hits)){
+      const avgPay=hits>0?Math.round(totalPayout/hits):0;
+      const desc=`${sign.playerName} が${sign.syaban}番のとき → ${pair[0]}・${pair[1]}両方3着以内 ${sign.rate}% (${sign.hits}/${trials})`;
+      roiPositive.push({
+        type:sign.type, regNo:sign.regNo, playerName:sign.playerName,
+        syaban:sign.syaban, linkedPair:sign.linkedPair,
+        trials,hits,hitWithPayout,
+        totalBet,totalPayout,roi:Math.round(roi*10)/10,avgPay,
+        rate:sign.rate,desc,
+        examples:enriched.filter(e=>e.isHit).slice(0,8).map(e=>({
+          date:e.race.date,venue:e.race.venue,raceNo:e.race.raceNo,
+          result:[e.race.result1,e.race.result2,e.race.result3].filter(Boolean).join('-'),
+          pay:e.pay,
+        })),
+      });
+    }
+
+    if(i%5===0||i===candidates.length-1){
+      const elapsed=Math.round((Date.now()-startedAt)/1000);
+      const remaining=i>0?Math.round((candidates.length-i-1)*(elapsed/(i+1))):'?';
+      onProgress({phase:'roi',
+        message:`${i+1}/${candidates.length} 確定${roiPositive.length}件 (経過${elapsed}s / 残り${remaining}s)`,
+        progress:(i+1)/candidates.length,
+      });
+    }
+  }
+
+  roiPositive.sort((a,b)=>b.roi-a.roi);
+  onProgress({phase:'done',message:`完了: ${roiPositive.length}件のROI100%+サイン`,progress:1});
+  return roiPositive;
+}
+
 async function clientFetchWideForRace(raceEncp){
   /* JSJ012: 1レースの詳細配当 (ワイド含む)
      return: {widePayouts: {'1-2': 140, ...}, wideNinki: {'1-2': 1, ...}}*/
@@ -3507,6 +3659,58 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
 function ValidationScreen({raceResults,signConditions,discoveries=[],players,reload}){
   const[running,setRunning]=useState(false);
   const[result,setResult]=useState(null);
+  const[roiRunning,setRoiRunning]=useState(false);
+  const[roiProgress,setRoiProgress]=useState(null);
+  const[roiResults,setRoiResults]=useState(null);
+  const cancelRef=useRef({cancelled:false});
+
+  const runROIMining=async()=>{
+    setRoiRunning(true); setRoiResults(null);
+    cancelRef.current={cancelled:false};
+    try{
+      const res=await mineROIPositive(raceResults,players,{
+        minRate:80,minROI:100,minTrials:3,
+        cancelRef:cancelRef.current,
+        onProgress:(p)=>setRoiProgress(p),
+      });
+      setRoiResults(res);
+      await reload();  // ワイド配当キャッシュ反映
+    }catch(e){
+      alert('エラー: '+e.message);
+    }finally{
+      setRoiRunning(false);
+    }
+  };
+
+  const adoptROISign=async(s)=>{
+    await dbPut('discoveries',{
+      type:s.type,regNo:s.regNo,playerName:s.playerName,
+      syaban:s.syaban,linkedPair:s.linkedPair,
+      trials:s.trials,rate:s.rate,
+      desc:s.desc,examples:s.examples,
+      _roi:s.roi,_avgPay:s.avgPay,_totalPayout:s.totalPayout,
+      active:true,adoptedAt:Date.now(),
+    });
+    reload();
+    alert(`採用しました (ROI ${s.roi}%, 平均配当 ${s.avgPay}円)`);
+  };
+
+  const adoptAllROI=async()=>{
+    if(!roiResults||roiResults.length===0)return;
+    if(!confirm(`ROI 100%+ サイン ${roiResults.length}件 を全て採用しますか?`))return;
+    for(const s of roiResults){
+      await dbPut('discoveries',{
+        type:s.type,regNo:s.regNo,playerName:s.playerName,
+        syaban:s.syaban,linkedPair:s.linkedPair,
+        trials:s.trials,rate:s.rate,
+        desc:s.desc,examples:s.examples,
+        _roi:s.roi,_avgPay:s.avgPay,_totalPayout:s.totalPayout,
+        active:true,adoptedAt:Date.now(),
+      });
+    }
+    reload();
+    alert(`${roiResults.length}件 採用完了`);
+  };
 
   const runChecks=async()=>{
     setRunning(true);
@@ -3621,6 +3825,73 @@ function ValidationScreen({raceResults,signConditions,discoveries=[],players,rel
 
   return(
     <div>
+      <div className="card" style={{borderColor:'var(--accent)',borderWidth:'2px'}}>
+        <div className="card-title" style={{color:'var(--accent)'}}>💎 ROI+ サイン総動員マイニング</div>
+        <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
+          全2車連動パターンを抽出して<strong>実際のワイド配当からROI計算</strong>:<br/>
+          • 連動率 <strong style={{color:'var(--green)'}}>80%以上</strong><br/>
+          • <strong style={{color:'var(--green)'}}>ワイドROI 100%以上</strong> (回収率)<br/>
+          • 試行3回以上
+        </p>
+        <p style={{fontSize:'10px',color:'var(--yellow)',marginBottom:'10px'}}>
+          ⚠️ 履歴データのワイド配当を取得するため数分〜数十分かかります<br/>
+          (CORSプロキシ経由、初回のみ遅い・キャッシュ後は瞬時)
+        </p>
+        {!roiRunning?(
+          <button className="btn btn-primary" onClick={runROIMining} style={{width:'100%'}}>
+            🔥 ROI+ サインを総動員で探す
+          </button>
+        ):(
+          <button className="btn btn-danger" onClick={()=>{cancelRef.current.cancelled=true;}} style={{width:'100%'}}>
+            ⏹ キャンセル
+          </button>
+        )}
+        {roiProgress&&(
+          <div style={{marginTop:'10px',padding:'8px 10px',background:'rgba(184,101,26,0.07)',borderRadius:'5px',fontSize:'11px'}}>
+            <div style={{display:'flex',gap:'6px',alignItems:'center'}}>
+              <span>{roiProgress.phase==='done'?'✓':'⏳'}</span>
+              <span>{roiProgress.message}</span>
+            </div>
+            {roiProgress.progress!=null&&(
+              <div style={{height:'4px',background:'var(--bg3)',borderRadius:'2px',marginTop:'6px',overflow:'hidden'}}>
+                <div style={{height:'100%',width:`${roiProgress.progress*100}%`,background:'var(--accent)',transition:'width 0.3s'}}/>
+              </div>
+            )}
+          </div>
+        )}
+
+        {roiResults&&roiResults.length>0&&(
+          <div style={{marginTop:'14px'}}>
+            <div style={{display:'flex',gap:'8px',alignItems:'center',marginBottom:'10px',flexWrap:'wrap'}}>
+              <div style={{fontWeight:'700',color:'var(--green)',fontSize:'14px'}}>🏆 ROI+ サイン {roiResults.length}件</div>
+              <button className="btn btn-sm btn-success" style={{marginLeft:'auto'}} onClick={adoptAllROI}>全て採用</button>
+            </div>
+            <div style={{maxHeight:'600px',overflowY:'auto'}}>
+              {roiResults.map((s,i)=>(
+                <div key={i} className="hist-item" style={{borderColor:'var(--green)',borderWidth:'2px'}}>
+                  <div style={{display:'flex',alignItems:'center',gap:'6px',flexWrap:'wrap',marginBottom:'6px'}}>
+                    <Chip no={s.syaban} size="sm"/>
+                    <span style={{fontWeight:'700',fontSize:'13px'}}>{s.playerName}</span>
+                    <span style={{color:'var(--text2)'}}>→</span>
+                    <Chip no={s.linkedPair[0]} size="sm"/><span>+</span><Chip no={s.linkedPair[1]} size="sm"/>
+                    <span style={{marginLeft:'auto',fontSize:'14px',fontWeight:'900',color:'var(--green)'}}>ROI {s.roi}%</span>
+                  </div>
+                  <div style={{padding:'6px 8px',background:'rgba(58,122,42,0.06)',borderRadius:'4px',fontSize:'11px',lineHeight:'1.6'}}>
+                    📋 {s.desc}<br/>
+                    💰 ベット{s.totalBet.toLocaleString()}円 / 払戻{s.totalPayout.toLocaleString()}円 / 平均配当 {s.avgPay}円<br/>
+                    📊 {s.hitWithPayout}/{s.hits}件で配当データあり
+                  </div>
+                  <button className="btn btn-sm btn-primary" style={{marginTop:'6px'}} onClick={()=>adoptROISign(s)}>採用</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {roiResults&&roiResults.length===0&&!roiRunning&&(
+          <div className="empty" style={{marginTop:'10px'}}>条件 (80%+連動&100%+ROI) を満たすサインが見つかりませんでした</div>
+        )}
+      </div>
+
       <div className="card">
         <div className="card-title">データ検証</div>
         <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
@@ -3847,7 +4118,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v1.0<br/>
+          競輪サイン予想 v1.1<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -3966,7 +4237,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.0</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.1</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
