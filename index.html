@@ -3436,7 +3436,237 @@ function buildSignHitMap(allRaces,signsRaw){
   return dailyMap;
 }
 
-function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
+function BetSimulator({raceResults,signConditions,discoveries,reload}){
+  const[bet,setBet]=useState(()=>Number(localStorage.getItem('simBet'))||1000);
+  const[running,setRunning]=useState(false);
+  const[progress,setProgress]=useState(null);
+  const[sim,setSim]=useState(null);
+  const cancelRef=useRef({cancelled:false});
+
+  const runSim=async()=>{
+    setRunning(true); setSim(null); setProgress(null);
+    cancelRef.current={cancelled:false};
+    localStorage.setItem('simBet',String(bet));
+    try{
+      const allSigns=dedupSigns([
+        ...signConditions.filter(c=>c.active),
+        ...discoveries.filter(d=>d.active!==false),
+      ]).filter(s=>{
+        // 2車連動のみ (ワイド対応)
+        const t=s.type||s.conditionType;
+        return (t==='PLAYER_SYABAN_PAIR_LINK'||t==='PLAYER_COMBO_PAIR_LINK')&&Array.isArray(s.linkedPair)&&s.linkedPair.length===2;
+      });
+      if(allSigns.length===0){
+        alert('採用済みの2車連動サインがありません');
+        setRunning(false);return;
+      }
+      const dedup=dedupRaces(raceResults).filter(r=>r.result1&&r.entries);
+      const venueEncCache={};
+      const perSign=[];
+
+      for(let si=0;si<allSigns.length;si++){
+        if(cancelRef.current.cancelled)break;
+        const sign=allSigns[si];
+        const pair=sign.linkedPair.map(Number).sort((a,b)=>a-b);
+        const key=pair.join('-');
+
+        // 該当レース抽出
+        const matched=[];
+        for(const r of dedup){
+          let isMatch=false;
+          const ents=r.entries||[];
+          const t=sign.type||sign.conditionType;
+          if(t==='PLAYER_SYABAN_PAIR_LINK'){
+            const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===Number(sign.syaban));
+            if(myE)isMatch=true;
+          }else if(t==='PLAYER_COMBO_PAIR_LINK'){
+            const a=ents.find(e=>String(e.regNo)===String(sign.regA)&&Number(e.syaban)===Number(sign.syaA));
+            const b=ents.find(e=>String(e.regNo)===String(sign.regB)&&Number(e.syaban)===Number(sign.syaB));
+            if(a&&b)isMatch=true;
+          }
+          if(!isMatch)continue;
+          const top3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+          matched.push({race:r,top3,isHit:pair.every(n=>top3.includes(n))});
+        }
+
+        // 的中レースのワイド配当取得
+        let totalBet=0,totalPayout=0,hitCount=0,missCount=0,unknownPayouts=0;
+        const detail=[];
+        for(let mi=0;mi<matched.length;mi++){
+          if(cancelRef.current.cancelled)break;
+          const m=matched[mi];
+          totalBet+=bet;
+          let pay=null;
+          if(m.isHit){
+            hitCount++;
+            // ワイド配当を取得
+            if(m.race.widePayouts&&m.race.widePayouts[key]!=null){
+              pay=m.race.widePayouts[key];
+            }else{
+              let rvPrm=m.race.raceRVPrm;
+              if(!rvPrm){
+                const cacheKey=`${m.race.date}|${m.race.venue}`;
+                if(!(cacheKey in venueEncCache)){
+                  try{
+                    const venues=await clientFetchVenues(m.race.date);
+                    const v=venues.find(x=>x.name===m.race.venue);
+                    if(v&&v.encPrm){
+                      const j=await _proxyFetch({type:'JSJ018',encp:v.encPrm});
+                      const map={};
+                      (j.resultList||[]).forEach(rr=>{
+                        const rno=parseInt((rr.rclblRaceNo||'').replace('R',''));
+                        if(rno&&(rr.raceRVPrm||rr.raceTanpyoPrm))map[rno]=rr.raceRVPrm||rr.raceTanpyoPrm;
+                      });
+                      venueEncCache[cacheKey]=map;
+                    }else{venueEncCache[cacheKey]={};}
+                  }catch(e){venueEncCache[cacheKey]={};}
+                }
+                rvPrm=venueEncCache[cacheKey][m.race.raceNo];
+              }
+              if(rvPrm){
+                try{
+                  const w=await clientFetchWideForRace(rvPrm);
+                  pay=w.widePayouts[key];
+                  if(Object.keys(w.widePayouts).length>0){
+                    await dbPut('raceResults',{...m.race,widePayouts:w.widePayouts,wideNinki:w.wideNinki,raceRVPrm:rvPrm});
+                  }
+                }catch(e){}
+              }
+            }
+            if(pay!=null){
+              const payout=pay*(bet/100);  // bet=1000円なら配当の10倍
+              totalPayout+=payout;
+            }else{
+              unknownPayouts++;
+            }
+          }else{
+            missCount++;
+          }
+          detail.push({...m,pay,payout:pay!=null?pay*(bet/100):null});
+        }
+
+        const roi=totalBet>0?totalPayout/totalBet*100:0;
+        perSign.push({
+          sign,trials:matched.length,hits:hitCount,misses:missCount,
+          unknownPayouts,totalBet,totalPayout,
+          profit:totalPayout-totalBet,
+          roi:Math.round(roi*10)/10,
+          detail,
+        });
+        setProgress({i:si+1,total:allSigns.length,message:`${si+1}/${allSigns.length} ${(sign.playerName||'?')} の集計中...`});
+      }
+
+      // 全体集計
+      const grand={
+        trials:perSign.reduce((s,x)=>s+x.trials,0),
+        hits:perSign.reduce((s,x)=>s+x.hits,0),
+        misses:perSign.reduce((s,x)=>s+x.misses,0),
+        unknownPayouts:perSign.reduce((s,x)=>s+x.unknownPayouts,0),
+        totalBet:perSign.reduce((s,x)=>s+x.totalBet,0),
+        totalPayout:perSign.reduce((s,x)=>s+x.totalPayout,0),
+      };
+      grand.profit=grand.totalPayout-grand.totalBet;
+      grand.roi=grand.totalBet>0?Math.round(grand.totalPayout/grand.totalBet*1000)/10:0;
+      grand.hitRate=grand.trials>0?Math.round(grand.hits/grand.trials*1000)/10:0;
+
+      // perSignをROI降順
+      perSign.sort((a,b)=>b.roi-a.roi);
+
+      setSim({grand,perSign,betAmount:bet});
+      await reload();
+    }catch(e){
+      alert('シミュレーション失敗: '+e.message);
+    }finally{
+      setRunning(false);
+    }
+  };
+
+  return(
+    <div className="card" style={{borderColor:'var(--accent)',borderWidth:'2px'}}>
+      <div className="card-title" style={{color:'var(--accent)'}}>💰 採用サイン ベットシミュレーション</div>
+      <div style={{fontSize:'12px',color:'var(--text2)',marginBottom:'10px',lineHeight:'1.6'}}>
+        採用済み全2車連動サインで毎回 <strong style={{color:'var(--accent)'}}>{bet.toLocaleString()}円</strong> を
+        連動ワイドにベットしていた場合の総収支・回収率を計算
+      </div>
+      <div style={{display:'flex',gap:'8px',alignItems:'center',marginBottom:'10px',flexWrap:'wrap'}}>
+        <label style={{fontSize:'12px',color:'var(--text2)'}}>1回あたり ベット額:</label>
+        <input className="inp" type="number" value={bet} onChange={e=>setBet(Math.max(100,Number(e.target.value)))} step="100" style={{width:'120px'}}/>
+        <span style={{fontSize:'11px',color:'var(--text2)'}}>円</span>
+      </div>
+      {!running?(
+        <button className="btn btn-primary" onClick={runSim} style={{width:'100%'}}>
+          ▶ シミュレーション実行
+        </button>
+      ):(
+        <button className="btn btn-danger" onClick={()=>{cancelRef.current.cancelled=true;}} style={{width:'100%'}}>
+          ⏹ キャンセル
+        </button>
+      )}
+      {progress&&(
+        <div style={{marginTop:'10px',padding:'8px',background:'var(--bg3)',borderRadius:'5px',fontSize:'11px'}}>
+          ⏳ {progress.message}
+          <div style={{height:'4px',background:'var(--bg)',borderRadius:'2px',marginTop:'4px',overflow:'hidden'}}>
+            <div style={{height:'100%',width:`${progress.i/progress.total*100}%`,background:'var(--accent)'}}/>
+          </div>
+        </div>
+      )}
+      {sim&&(<>
+        {/* 全体集計カード */}
+        <div style={{marginTop:'14px',padding:'14px',borderRadius:'8px',border:`2px solid ${sim.grand.profit>=0?'var(--green)':'var(--red)'}`,background:sim.grand.profit>=0?'rgba(58,122,42,0.06)':'rgba(187,34,0,0.05)'}}>
+          <div style={{fontWeight:'700',fontSize:'14px',marginBottom:'8px'}}>🏆 全体集計 (1回 {sim.betAmount.toLocaleString()}円ベット)</div>
+          <div style={{display:'flex',gap:'12px',flexWrap:'wrap',marginBottom:'8px',fontSize:'12px'}}>
+            <span>該当 <strong>{sim.grand.trials}</strong>回</span>
+            <span>的中 <strong style={{color:'var(--green)'}}>{sim.grand.hits}</strong>回</span>
+            <span>不発 <strong style={{color:'var(--red)'}}>{sim.grand.misses}</strong>回</span>
+            <span>的中率 <strong>{sim.grand.hitRate}%</strong></span>
+          </div>
+          <div style={{display:'flex',gap:'12px',flexWrap:'wrap',marginBottom:'8px',fontSize:'12px'}}>
+            <span>ベット総額 <strong>{sim.grand.totalBet.toLocaleString()}円</strong></span>
+            <span>払戻総額 <strong style={{color:'var(--green)'}}>{sim.grand.totalPayout.toLocaleString()}円</strong></span>
+          </div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:'10px',padding:'8px',background:'rgba(0,0,0,0.04)',borderRadius:'6px'}}>
+            <div>
+              <div style={{fontSize:'11px',color:'var(--text2)'}}>収支</div>
+              <div style={{fontSize:'24px',fontWeight:'900',color:sim.grand.profit>=0?'var(--green)':'var(--red)'}}>
+                {sim.grand.profit>=0?'+':''}{sim.grand.profit.toLocaleString()}円
+              </div>
+            </div>
+            <div style={{textAlign:'right'}}>
+              <div style={{fontSize:'11px',color:'var(--text2)'}}>回収率</div>
+              <div style={{fontSize:'28px',fontWeight:'900',color:sim.grand.roi>=100?'var(--green)':'var(--red)'}}>{sim.grand.roi}%</div>
+            </div>
+          </div>
+          {sim.grand.unknownPayouts>0&&(
+            <div style={{fontSize:'10px',color:'var(--yellow)',marginTop:'6px'}}>
+              ⚠️ 配当不明: {sim.grand.unknownPayouts}件 (払戻計算から除外)
+            </div>
+          )}
+        </div>
+
+        {/* サイン別内訳 */}
+        <div className="section-title" style={{marginTop:'14px'}}>サイン別内訳 ({sim.perSign.length}件)</div>
+        <div style={{maxHeight:'500px',overflowY:'auto'}}>
+          {sim.perSign.map((p,i)=>{
+            const color=p.profit>=0?'var(--green)':'var(--red)';
+            return(
+              <div key={i} className="hist-item" style={{borderColor:color,borderWidth:'1px'}}>
+                <div style={{fontSize:'11px',marginBottom:'5px',lineHeight:'1.4'}}>{describeSign(p.sign)}</div>
+                <div style={{display:'flex',gap:'10px',flexWrap:'wrap',fontSize:'11px',color:'var(--text2)'}}>
+                  <span>該当{p.trials}回 / 的中{p.hits} / 不発{p.misses}</span>
+                  <span style={{color}}>収支 {p.profit>=0?'+':''}{p.profit.toLocaleString()}円</span>
+                  <span style={{marginLeft:'auto',fontWeight:'700',color}}>ROI {p.roi}%</span>
+                </div>
+                {p.unknownPayouts>0&&<div style={{fontSize:'10px',color:'var(--yellow)',marginTop:'3px'}}>※ 配当不明{p.unknownPayouts}件</div>}
+              </div>
+            );
+          })}
+        </div>
+      </>)}
+    </div>
+  );
+}
+
+function PerformanceScreen({raceResults,signConditions,discoveries=[],reload}){
   const today=new Date().toISOString().slice(0,10);
   const[period,setPeriod]=useState('day');
   const[selectedDate,setSelectedDate]=useState(today);
@@ -3511,6 +3741,7 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[]}){
 
   return(
     <div>
+      <BetSimulator raceResults={raceResults} signConditions={signConditions} discoveries={discoveries} reload={reload}/>
       <div className="card">
         <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
           <div style={{flex:1,fontWeight:'700',fontSize:'12px',color:'var(--text2)',letterSpacing:'.5px',textTransform:'uppercase'}}>予想記録履歴 ({logs.length}件)</div>
@@ -4100,7 +4331,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v1.3<br/>
+          競輪サイン予想 v1.4<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -4219,7 +4450,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.3</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.4</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
@@ -4239,7 +4470,7 @@ function App(){
       <div className="content">
         {tab==='today'&&<TodayRacesScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
         {tab==='tally'&&<TallyScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
-        {tab==='perf'&&<PerformanceScreen raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
+        {tab==='perf'&&<PerformanceScreen raceResults={raceResults} signConditions={signConditions} discoveries={discoveries} reload={reload}/>}
         {tab==='race'&&<TodayScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries} reload={reload}/>}
         {tab==='input'&&<InputScreen reload={reload}/>}
         {tab==='sign'&&<SignConditionsScreen players={players} signConditions={signConditions} discoveries={discoveries} raceResults={raceResults} reload={reload}/>}
