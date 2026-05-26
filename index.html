@@ -395,6 +395,16 @@ function mineClientSide(races, players, opts={}){
   const validRaces=races.filter(r=>r.result1&&r.entries&&r.entries.length>0);
   const playerMap={};
   players.forEach(p=>{if(p.regNo)playerMap[String(p.regNo).padStart(6,'0')]=p;});
+  // フォールバック: 選手DBに無いregNoはrace.entriesから名前を補完
+  validRaces.forEach(r=>{
+    (r.entries||[]).forEach(e=>{
+      const rn=String(e.regNo||'').padStart(6,'0');
+      if(!rn||playerMap[rn])return;
+      if(e.name){
+        playerMap[rn]={regNo:rn,name:e.name,prefecture:e.prefecture||'',kyaku:e.kyaku||''};
+      }
+    });
+  });
 
   // 1. コース連動: 選手×場×車番の連動率
   const histories={};
@@ -1461,22 +1471,37 @@ function SignConditionsScreen({players,signConditions,discoveries,reload,raceRes
   const runDiscover=async()=>{
     setDiscRunning(true);
     try{
+      // 事前に選手DBを race.entries から自動補完
+      const existingRegs=new Set(players.filter(p=>p.regNo).map(p=>String(p.regNo).padStart(6,'0')));
+      const toAdd=new Map();
+      raceResults.forEach(r=>{
+        (r.entries||[]).forEach(e=>{
+          const rn=String(e.regNo||'').padStart(6,'0');
+          if(!rn||existingRegs.has(rn)||toAdd.has(rn))return;
+          if(e.name)toAdd.set(rn,{regNo:rn,name:e.name,prefecture:e.prefecture||'',kyaku:e.kyaku||'',grade:''});
+        });
+      });
+      if(toAdd.size>0){
+        for(const p of toAdd.values()){await dbPut('players',p);}
+        await reload();
+      }
       // サーバーがあればAPI、なければクライアントサイドで実行
+      const updatedPlayers=toAdd.size>0?[...players,...Array.from(toAdd.values())]:players;
       if(_useServer){
         try{
           const r=await fetch(`${_serverBase}/api/discover?min_trials=5&min_rate=90`);
           const ct=r.headers.get('content-type')||'';
           if(ct.includes('json')){
             const d=await r.json();
-            setDiscResult(d);
+            setDiscResult({...d,_autoAdded:toAdd.size});
             return;
           }
         }catch(e){console.warn('Server mining failed, falling back to client:',e);}
       }
       // クライアントサイド実装 (蓄積データから計算)
       await new Promise(res=>setTimeout(res,50));
-      const result=mineClientSide(raceResults,players,{minTrials:5,minRate:90});
-      setDiscResult({ok:true,...result});
+      const result=mineClientSide(raceResults,updatedPlayers,{minTrials:5,minRate:90});
+      setDiscResult({ok:true,_autoAdded:toAdd.size,...result});
     }catch(e){
       alert('マイニング失敗: '+e.message);
     }finally{setDiscRunning(false)}
@@ -1509,6 +1534,11 @@ function SignConditionsScreen({players,signConditions,discoveries,reload,raceRes
           </button>
           {discResult&&(
             <div style={{marginTop:'12px'}}>
+              {discResult._autoAdded>0&&(
+                <div style={{fontSize:'11px',color:'var(--green)',marginBottom:'8px',padding:'6px 8px',background:'rgba(58,122,42,0.07)',borderRadius:'5px',border:'1px solid var(--green)'}}>
+                  ✓ 蓄積データから選手DBを {discResult._autoAdded}名 自動補完しました (選手名が「?」表示されなくなります)
+                </div>
+              )}
               <div className="section-title">コース連動 ({discResult.courseLink?.length||0}件)</div>
               {(discResult.courseLink||[]).slice(0,30).map((d,i)=>(
                 <div key={i} className="hist-item">

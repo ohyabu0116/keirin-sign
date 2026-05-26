@@ -564,6 +564,18 @@ def _build_example(r):
         'kimari': r.get('kimari1') or '',
     }
 
+def _build_player_map(players, races):
+    """選手DBに無いregNoはraceエントリから名前を補完したplayerMapを返す"""
+    pm = {str(p.get('regNo')).zfill(6): p for p in players if p.get('regNo')}
+    for r in races:
+        for e in r.get('entries') or []:
+            rn = str(e.get('regNo') or '').zfill(6)
+            if rn and rn not in pm and e.get('name'):
+                pm[rn] = {'regNo': rn, 'name': e.get('name',''),
+                          'prefecture': e.get('prefecture',''),
+                          'kyaku': e.get('kyaku','')}
+    return pm
+
 def mine_player_syaban_link(min_trials=3, min_rate=70):
     """「ある選手が○番のとき、△番が3着以内に来る確率」を集計
     競輪の代表的なサイン: 特定選手が固定車番に入ると連動車番が決まる"""
@@ -578,7 +590,7 @@ def mine_player_syaban_link(min_trials=3, min_rate=70):
             if not rn or not sy: continue
             hist.setdefault((rn, int(sy)), []).append(r)
     out = []
-    players = {str(p.get('regNo')).zfill(6): p for p in db_all('players') if p.get('regNo')}
+    players = _build_player_map(db_all('players'), races)
     for (rn, sy), races_for in hist.items():
         if len(races_for) < min_trials: continue
         # 9車立てMAXまでの各車番ごとに3着以内率を計算
@@ -633,7 +645,7 @@ def mine_player_syaban_pair_link(min_trials=3, min_rate=70):
             if not rn or not sy: continue
             hist.setdefault((rn, int(sy)), []).append(r)
     out = []
-    players = {str(p.get('regNo')).zfill(6): p for p in db_all('players') if p.get('regNo')}
+    players = _build_player_map(db_all('players'), races)
     for (rn, sy), races_for in hist.items():
         if len(races_for) < min_trials: continue
         # 各レースで上位3着の車番セットを取得
