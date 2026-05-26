@@ -307,6 +307,28 @@ async function clientFetchRacelist(dateStr,venueName,raceNo){
   return {races,encPrm:v.encPrm,grade:v.grade};
 }
 
+async function clientFetchWideForRace(raceEncp){
+  /* JSJ012: 1レースの詳細配当 (ワイド含む)
+     return: {widePayouts: {'1-2': 140, ...}, wideNinki: {'1-2': 1, ...}}*/
+  try{
+    const j=await _proxyFetch({type:'JSJ012',encp:raceEncp});
+    const sub=j.haraiGakuSubData||{};
+    const wideList=sub.WHaraiGakuDispItemSubData||[];
+    const widePayouts={},wideNinki={};
+    wideList.forEach(it=>{
+      if(!it.kumiBan)return;
+      const nums=it.kumiBan.split('=').map(n=>parseInt(n.trim())).filter(n=>n>0).sort((a,b)=>a-b);
+      if(nums.length!==2)return;
+      const key=nums.join('-');
+      const price=parseInt((it.haraiGaku||'').replace(/[,円]/g,''));
+      const ninki=parseInt((it.ninki||'').replace(/[()]/g,''));
+      if(price>0)widePayouts[key]=price;
+      if(ninki>0)wideNinki[key]=ninki;
+    });
+    return {widePayouts,wideNinki};
+  }catch(e){return {widePayouts:{},wideNinki:{}};}
+}
+
 async function clientFetchResults(dateStr,venueName){
   const venues=await clientFetchVenues(dateStr);
   const v=venues.find(x=>x.name===venueName);
@@ -1630,6 +1652,115 @@ function ExampleList({examples,misses}){
   );
 }
 
+function RoiButton({sign,raceResults}){
+  const[roi,setRoi]=useState(null);
+  const[running,setRunning]=useState(false);
+  const calculate=async()=>{
+    setRunning(true);
+    try{
+      const pair=Array.isArray(sign.linkedPair)?sign.linkedPair.map(Number).sort((a,b)=>a-b):null;
+      if(!pair||pair.length!==2){alert('ワイド検証は2車連動サインのみ対応');setRunning(false);return;}
+      const key=pair.join('-');
+      // 該当する過去レースを抽出
+      const dedup=dedupRaces(raceResults);
+      const matched=[];
+      for(const r of dedup){
+        if(!r.result1||!r.entries)continue;
+        const myE=(r.entries||[]).find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===Number(sign.syaban));
+        if(!myE)continue;
+        const top3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+        const isHit=pair.every(n=>top3.includes(n));
+        matched.push({race:r,isHit});
+      }
+      // 各的中レースについてワイド配当を取得 (キャッシュなければCORSプロキシ経由でJSJ012)
+      let totalPayout=0,hitCount=0,fetchedNew=0;
+      const enriched=[];
+      const venueEncCache={};  // (date,venue) → race-level enc map
+      for(const m of matched){
+        if(!m.isHit){enriched.push(m);continue;}
+        let pay=null;
+        if(m.race.widePayouts&&m.race.widePayouts[key]!=null){
+          pay=m.race.widePayouts[key];
+        }else{
+          let rvPrm=m.race.raceRVPrm;
+          if(!rvPrm){
+            // 過去レースで raceRVPrm がない場合は会場のJSJ018から取得
+            const cacheKey=`${m.race.date}|${m.race.venue}`;
+            if(!venueEncCache[cacheKey]){
+              try{
+                const venues=await clientFetchVenues(m.race.date);
+                const v=venues.find(x=>x.name===m.race.venue);
+                if(v&&v.encPrm){
+                  const j=await _proxyFetch({type:'JSJ018',encp:v.encPrm});
+                  const map={};
+                  (j.resultList||[]).forEach(r=>{
+                    const rno=parseInt((r.rclblRaceNo||'').replace('R',''));
+                    if(rno&&(r.raceRVPrm||r.raceTanpyoPrm))map[rno]=r.raceRVPrm||r.raceTanpyoPrm;
+                  });
+                  venueEncCache[cacheKey]=map;
+                }else{venueEncCache[cacheKey]={};}
+              }catch(e){venueEncCache[cacheKey]={};}
+            }
+            rvPrm=venueEncCache[cacheKey][m.race.raceNo];
+          }
+          if(rvPrm){
+            try{
+              const w=await clientFetchWideForRace(rvPrm);
+              pay=w.widePayouts[key];
+              if(pay!=null||Object.keys(w.widePayouts).length>0){
+                const updated={...m.race,widePayouts:w.widePayouts,wideNinki:w.wideNinki,raceRVPrm:rvPrm};
+                await dbPut('raceResults',updated);
+                fetchedNew++;
+              }
+            }catch(e){console.warn('wide fetch failed',e);}
+          }
+        }
+        if(pay!=null){totalPayout+=pay;hitCount++;}
+        enriched.push({...m,pay});
+      }
+      const totalBets=matched.length*100;
+      const totalReturn=totalPayout;
+      const roi=totalBets>0?(totalReturn/totalBets*100):0;
+      setRoi({trials:matched.length,hits:hitCount,totalPayout,totalBets,roi,enriched,fetchedNew});
+    }catch(e){
+      alert('検証失敗: '+e.message);
+    }finally{setRunning(false);}
+  };
+  return(
+    <>
+      <button className="btn btn-sm btn-ghost" onClick={calculate} disabled={running}
+        style={{fontSize:'11px',padding:'3px 8px',minHeight:'28px',marginTop:'4px'}}>
+        {running?'⏳ 計算中...':'💰 ワイド回収率を検証'}
+      </button>
+      {roi&&(
+        <div style={{marginTop:'8px',padding:'9px 11px',background:roi.roi>=100?'rgba(58,122,42,0.07)':'rgba(187,34,0,0.05)',
+          border:`1px solid ${roi.roi>=100?'var(--green)':'var(--red)'}`,borderRadius:'6px',fontSize:'12px'}}>
+          <div style={{display:'flex',gap:'12px',flexWrap:'wrap',marginBottom:'6px'}}>
+            <span><strong>該当{roi.trials}回</strong> ベット{roi.totalBets.toLocaleString()}円</span>
+            <span>的中<strong style={{color:'var(--green)'}}>{roi.hits}回</strong></span>
+            <span>払戻 <strong style={{color:'var(--green)'}}>{roi.totalPayout.toLocaleString()}円</strong></span>
+            <span style={{marginLeft:'auto',fontWeight:'900',fontSize:'15px',color:roi.roi>=100?'var(--green)':'var(--red)'}}>回収率 {roi.roi.toFixed(1)}%</span>
+          </div>
+          {roi.fetchedNew>0&&<div style={{fontSize:'10px',color:'var(--text2)'}}>※ {roi.fetchedNew}件のワイド配当を新規取得しました</div>}
+          <details style={{marginTop:'6px'}}>
+            <summary style={{cursor:'pointer',fontSize:'11px',color:'var(--text2)'}}>個別の結果を見る ({roi.enriched.length}件)</summary>
+            <div style={{maxHeight:'180px',overflowY:'auto',marginTop:'6px',fontSize:'10px'}}>
+              {roi.enriched.slice(0,30).map((e,i)=>(
+                <div key={i} style={{display:'flex',gap:'6px',padding:'2px 0',color:'var(--text2)'}}>
+                  <span style={{minWidth:'76px'}}>{e.race.date}</span>
+                  <span style={{minWidth:'56px'}}>{e.race.venue}{e.race.raceNo}R</span>
+                  <span>結果 {e.race.result1}-{e.race.result2}-{e.race.result3}</span>
+                  {e.isHit?<span style={{color:'var(--green)',fontWeight:'700'}}>✅ {e.pay?`${e.pay.toLocaleString()}円`:'(配当未取得)'}</span>:<span style={{color:'var(--red)'}}>❌</span>}
+                </div>
+              ))}
+            </div>
+          </details>
+        </div>
+      )}
+    </>
+  );
+}
+
 function SignConditionsScreen({players,signConditions,discoveries=[],reload,raceResults}){
   const[edit,setEdit]=useState(null);
   const[showDiscover,setShowDiscover]=useState(false);
@@ -1921,6 +2052,9 @@ function SignConditionsScreen({players,signConditions,discoveries=[],reload,race
                   {d.adoptedAt&&` / 採用 ${new Date(d.adoptedAt).toLocaleDateString('ja-JP')}`}
                 </div>
                 <ExampleList examples={d.examples} misses={d.misses}/>
+                {(d.type==='PLAYER_SYABAN_PAIR_LINK'||d.type==='PLAYER_COMBO_PAIR_LINK')&&Array.isArray(d.linkedPair)&&(
+                  <RoiButton sign={d} raceResults={raceResults}/>
+                )}
                 <div style={{display:'flex',gap:'5px',marginTop:'6px'}}>
                   <button className="btn btn-sm btn-ghost" onClick={async()=>{
                     await dbPut('discoveries',{...d,active:!isActive});reload();
@@ -2134,7 +2268,20 @@ function InputScreen({reload}){
             exactaPayout:pay2raw?Number(pay2raw):null,
             trifectaNinki:ninki3?Number(ninki3):null,
             exactaNinki:ninki2?Number(ninki2):null,
+            raceRVPrm:r.raceRVPrm||r.raceTanpyoPrm||'',
           };
+        });
+        // 各レースのワイド配当を取得 (JSJ012) - 結果ありのレースのみ並列実行
+        const racesWithResult=Object.entries(resMap).filter(([_,r])=>r.result1&&r.raceRVPrm);
+        const wideResults=await Promise.all(racesWithResult.map(async([rno,r])=>{
+          const w=await clientFetchWideForRace(r.raceRVPrm);
+          return [rno,w];
+        }));
+        wideResults.forEach(([rno,w])=>{
+          if(resMap[rno]){
+            resMap[rno].widePayouts=w.widePayouts;
+            resMap[rno].wideNinki=w.wideNinki;
+          }
         });
         const races=(entriesJson.rInfo||[]).map(r=>({
           date:ds, venue:v.name, raceNo:Number(r.raceNo),
@@ -2484,10 +2631,13 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
                 <span style={{marginLeft:'auto',fontSize:'12px',color:'var(--yellow)',fontWeight:'700'}}>⏳ 結果待ち</span>
               )}
             </div>
-            {hasResult&&(race.trifectaPayout||race.exactaPayout)&&(
+            {hasResult&&(race.trifectaPayout||race.exactaPayout||race.widePayouts)&&(
               <div style={{display:'flex',gap:'10px',flexWrap:'wrap',fontSize:'11px',color:'var(--text2)',marginBottom:'8px',padding:'4px 8px',background:'rgba(184,101,26,0.05)',borderRadius:'5px'}}>
                 {race.exactaPayout&&<span>2車単 {race.exactaCombo} <strong style={{color:'var(--accent)'}}>{race.exactaPayout.toLocaleString()}円</strong>{race.exactaNinki&&<span style={{marginLeft:'4px',color:'var(--text2)'}}>({race.exactaNinki}番人気)</span>}</span>}
                 {race.trifectaPayout&&<span>3連単 {race.trifectaCombo} <strong style={{color:'var(--accent)'}}>{race.trifectaPayout.toLocaleString()}円</strong>{race.trifectaNinki&&<span style={{marginLeft:'4px',color:'var(--text2)'}}>({race.trifectaNinki}番人気)</span>}</span>}
+                {race.widePayouts&&Object.entries(race.widePayouts).map(([combo,pay])=>(
+                  <span key={combo}>ワイド {combo.replace('-','=')} <strong style={{color:'var(--green)'}}>{pay.toLocaleString()}円</strong>{race.wideNinki?.[combo]&&<span style={{marginLeft:'4px'}}>({race.wideNinki[combo]}人気)</span>}</span>
+                ))}
               </div>
             )}
             {race.alerts.map((a,j)=>{
