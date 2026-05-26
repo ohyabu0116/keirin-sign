@@ -178,6 +178,18 @@ async function _idbPut(store,data){
     const dup=existing.find(r=>String(r.date)===String(data.date)&&String(r.venue)===String(data.venue)&&String(r.raceNo)===String(data.raceNo));
     if(dup)data={...data,id:dup.id};
   }
+  // discoveries: 同一サインキーがあれば上書き
+  if(store==='discoveries'&&!data.id&&data.type){
+    const existing=await new Promise((res,rej)=>{
+      const t=db.transaction(store,'readonly');
+      const r=t.objectStore(store).getAll();
+      r.onsuccess=()=>res(r.result||[]);
+      r.onerror=()=>rej(r.error);
+    });
+    const newKey=signKey(data);
+    const dup=existing.find(d=>signKey(d)===newKey);
+    if(dup)data={...data,id:dup.id};
+  }
   return new Promise((res,rej)=>{
     const t=db.transaction(store,'readwrite');
     const r=t.objectStore(store).put(data);
@@ -424,6 +436,43 @@ function permutations(arr,r){
 /* ====================================================================
    クライアントサイド マイニング (サーバーなしでも動作)
 ==================================================================== */
+// サインの一意キーを生成
+function signKey(s){
+  const type=s.type||s.conditionType||'';
+  const reg=s.regNo||'';
+  const sy=s.syaban||'';
+  if(type==='PLAYER_SYABAN_LINK')return `PSL|${reg}|${sy}|${s.linkedSyaban||''}`;
+  if(type==='PLAYER_SYABAN_PAIR_LINK'){
+    const pair=Array.isArray(s.linkedPair)?[...s.linkedPair].sort((a,b)=>a-b).join(','):(s.linkedPair||'');
+    return `PSPL|${reg}|${sy}|${pair}`;
+  }
+  if(type==='PLAYER_COMBO_LINK'){
+    const ab=[s.regA,s.regB].sort().join('+');
+    return `PCL|${ab}|${s.syaA}|${s.syaB}|${s.linkedSyaban||''}`;
+  }
+  if(type==='PLAYER_COMBO_PAIR_LINK'){
+    const ab=[s.regA,s.regB].sort().join('+');
+    const pair=Array.isArray(s.linkedPair)?[...s.linkedPair].sort((a,b)=>a-b).join(','):'';
+    return `PCPL|${ab}|${s.syaA}|${s.syaB}|${pair}`;
+  }
+  if(type==='COURSE_LINK')return `CL|${reg}|${s.venue||''}|${sy}|${s.lookback||3}`;
+  if(type==='KYAKU_PATTERN')return `KP|${s.pattern}|${s.winnerKyaku}`;
+  return `${type}|${reg}|${sy}`;
+}
+
+// サイン配列を一意キーで重複除去 (最初に出現したものを残す)
+function dedupSigns(signs){
+  const seen=new Set();
+  const out=[];
+  signs.forEach(s=>{
+    const k=signKey(s);
+    if(seen.has(k))return;
+    seen.add(k);
+    out.push(s);
+  });
+  return out;
+}
+
 // 同date+venue+raceNoの重複を除去 (id最大=最新を残す)
 function dedupRaces(races){
   const byKey={};
@@ -2042,10 +2091,12 @@ function SignConditionsScreen({players,signConditions,discoveries=[],reload,race
         );
       })}
 
-      {discoveries.length>0&&(
+      {discoveries.length>0&&(()=>{
+        const uniqDiscoveries=dedupSigns(discoveries);
+        return(
         <div style={{marginTop:'18px'}}>
-          <div className="section-title">🔬 採用済み自動発見サイン ({discoveries.length}件)</div>
-          {discoveries.map(d=>{
+          <div className="section-title">🔬 採用済み自動発見サイン ({uniqDiscoveries.length}件{discoveries.length>uniqDiscoveries.length?` / 重複${discoveries.length-uniqDiscoveries.length}件統合`:''})</div>
+          {uniqDiscoveries.map(d=>{
             const isActive=d.active!==false;
             const typ=COND_TYPES.find(t=>t.value===d.type);
             return(
@@ -2087,7 +2138,8 @@ function SignConditionsScreen({players,signConditions,discoveries=[],reload,race
             );
           })}
         </div>
-      )}
+        );
+      })()}
 
       {edit&&(
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.4)',zIndex:1000,display:'flex',alignItems:'flex-end',justifyContent:'center'}}
@@ -2695,10 +2747,10 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
   // 各サイン (条件+発見) の本日該当一覧を作成
   const tally=useMemo(()=>{
     const items=[];
-    const allSigns=[
+    const allSigns=dedupSigns([
       ...signConditions.filter(c=>c.active).map(c=>({...c,_source:'manual'})),
       ...discoveries.filter(d=>d.active!==false).map(d=>({...d,_source:'auto'})),
-    ];
+    ]);
     for(const sign of allSigns){
       // 各今日のレースについてマッチ判定
       const matchedRaces=[];
@@ -2773,12 +2825,12 @@ function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
   const totalConn=tally.reduce((s,t)=>s+t.connectedCount,0);
 
   // 該当なし採用サイン (今日に出ていない/該当しないもの)
-  const activeSigns=[
+  const activeSigns=dedupSigns([
     ...signConditions.filter(c=>c.active),
     ...discoveries.filter(d=>d.active!==false),
-  ];
-  const usedIds=new Set(tally.map(t=>(t.sign.id||0)));
-  const notMatched=activeSigns.filter(s=>!usedIds.has(s.id||0));
+  ]);
+  const usedKeys=new Set(tally.map(t=>signKey(t.sign)));
+  const notMatched=activeSigns.filter(s=>!usedKeys.has(signKey(s)));
 
   if(tally.length===0&&activeSigns.length===0)return(
     <div className="card" style={{textAlign:'center',padding:'40px 20px'}}>
@@ -3035,9 +3087,10 @@ function downloadDataURL(dataURL,filename){
 /* ====================================================================
    成績集計画面 (期間別分析)
 ==================================================================== */
-function buildSignHitMap(allRaces,signs){
+function buildSignHitMap(allRaces,signsRaw){
   /* 全レース×全サインでヒット状況を計算
      返値: { dateStr: {matches, hits, withResult, items:[{venue,raceNo,linked,top3,hit}]} } */
+  const signs=dedupSigns(signsRaw);
   const racesByDate={};
   allRaces.forEach(r=>{
     if(!r.date)return;
@@ -3437,6 +3490,19 @@ function App(){
         if(toDelete.length>0){
           console.log(`[startup] 重複レース ${toDelete.length}件 を自動削除`);
           for(const id of toDelete){await dbDel('raceResults',id);}
+        }
+        // 同様にdiscoveriesも重複削除
+        const discs=await dbAll('discoveries');
+        const seenKeys=new Map();
+        const toDel2=[];
+        discs.forEach(d=>{
+          const k=signKey(d);
+          if(seenKeys.has(k))toDel2.push(d.id);
+          else seenKeys.set(k,d.id);
+        });
+        if(toDel2.length>0){
+          console.log(`[startup] 重複サイン ${toDel2.length}件 を自動削除`);
+          for(const id of toDel2){await dbDel('discoveries',id);}
         }
       }catch(e){console.warn('startup dedup failed:',e);}
       reload().then(()=>setLoaded(true));
