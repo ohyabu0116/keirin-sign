@@ -167,6 +167,17 @@ async function _idbAll(store){
 }
 async function _idbPut(store,data){
   const db=await _getIDB();
+  // raceResults: 同date+venue+raceNoがあれば上書き
+  if(store==='raceResults'&&data.date&&data.venue&&data.raceNo!=null&&!data.id){
+    const existing=await new Promise((res,rej)=>{
+      const t=db.transaction(store,'readonly');
+      const r=t.objectStore(store).getAll();
+      r.onsuccess=()=>res(r.result||[]);
+      r.onerror=()=>rej(r.error);
+    });
+    const dup=existing.find(r=>String(r.date)===String(data.date)&&String(r.venue)===String(data.venue)&&String(r.raceNo)===String(data.raceNo));
+    if(dup)data={...data,id:dup.id};
+  }
   return new Promise((res,rej)=>{
     const t=db.transaction(store,'readwrite');
     const r=t.objectStore(store).put(data);
@@ -389,10 +400,22 @@ function permutations(arr,r){
 /* ====================================================================
    クライアントサイド マイニング (サーバーなしでも動作)
 ==================================================================== */
+// 同date+venue+raceNoの重複を除去 (id最大=最新を残す)
+function dedupRaces(races){
+  const byKey={};
+  races.forEach(r=>{
+    const k=`${r.date||''}|${r.venue||''}|${r.raceNo||''}`;
+    const prev=byKey[k];
+    if(!prev||(r.id||0)>(prev.id||0))byKey[k]=r;
+  });
+  return Object.values(byKey);
+}
+
 function mineClientSide(races, players, opts={}){
   const minTrials=opts.minTrials||5;
   const minRate=opts.minRate||90;
-  const validRaces=races.filter(r=>r.result1&&r.entries&&r.entries.length>0);
+  // 重複レース排除 → 結果あり&エントリありのみ
+  const validRaces=dedupRaces(races).filter(r=>r.result1&&r.entries&&r.entries.length>0);
   const playerMap={};
   players.forEach(p=>{if(p.regNo)playerMap[String(p.regNo).padStart(6,'0')]=p;});
   // フォールバック: 選手DBに無いregNoはrace.entriesから名前を補完
@@ -2041,7 +2064,7 @@ function InputScreen({reload}){
 function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
   const today=new Date().toISOString().slice(0,10);
   const analyzed=useMemo(()=>{
-    const todayRaces=raceResults.filter(r=>r.date===today);
+    const todayRaces=dedupRaces(raceResults.filter(r=>r.date===today));
     return todayRaces.map(r=>{
       const {alerts,linked,tickets}=runAnalysis({
         entries:r.entries||[],raceResults,signConditions,players,discoveries,venue:r.venue
@@ -2129,7 +2152,7 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
 ==================================================================== */
 function TallyScreen({players,raceResults,signConditions,discoveries=[]}){
   const today=new Date().toISOString().slice(0,10);
-  const todayRaces=useMemo(()=>raceResults.filter(r=>r.date===today),[raceResults,today]);
+  const todayRaces=useMemo(()=>dedupRaces(raceResults.filter(r=>r.date===today)),[raceResults,today]);
 
   // 各サイン (条件+発見) の本日該当一覧を作成
   const tally=useMemo(()=>{
@@ -2313,6 +2336,25 @@ function SettingsScreen({connected,reload}){
     load();
   },[]);
 
+  const dedupDB=async()=>{
+    const races=await dbAll('raceResults');
+    const byKey={};
+    const toDelete=[];
+    races.forEach(r=>{
+      const k=`${r.date||''}|${r.venue||''}|${r.raceNo||''}`;
+      const prev=byKey[k];
+      if(!prev){byKey[k]=r;return;}
+      // id大きい方=新しいものを残す
+      if((r.id||0)>(prev.id||0)){toDelete.push(prev.id);byKey[k]=r;}
+      else{toDelete.push(r.id);}
+    });
+    if(toDelete.length===0)return alert('重複レースはありませんでした');
+    if(!confirm(`重複レース ${toDelete.length}件 を削除します。よろしいですか?`))return;
+    for(const id of toDelete){await dbDel('raceResults',id);}
+    alert(`${toDelete.length}件の重複レースを削除しました`);
+    reload();
+  };
+
   const autoRegister=async()=>{
     if(!_useServer){
       // クライアントサイド実装
@@ -2363,9 +2405,14 @@ function SettingsScreen({connected,reload}){
             <div>期間: <strong>{stats.date_from||'-'}〜{stats.date_to||'-'}</strong></div>
           </div>
         ):<div className="empty">統計取得中...</div>}
-        <button className="btn btn-primary btn-sm" style={{marginTop:'10px'}} onClick={autoRegister}>
-          蓄積レースから選手DBを自動更新
-        </button>
+        <div style={{display:'flex',gap:'8px',marginTop:'10px',flexWrap:'wrap'}}>
+          <button className="btn btn-primary btn-sm" onClick={autoRegister}>
+            蓄積レースから選手DBを自動更新
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={dedupDB}>
+            🧹 重複レースを削除
+          </button>
+        </div>
       </div>
       <div className="card">
         <div className="card-title">アプリ情報</div>
@@ -2399,8 +2446,25 @@ function App(){
   },[]);
 
   useEffect(()=>{
-    initStorage().then(m=>{
+    initStorage().then(async m=>{
       setConnected(m==='local');
+      // 起動時に重複レースを自動クリーンアップ
+      try{
+        const races=await dbAll('raceResults');
+        const byKey={};
+        const toDelete=[];
+        races.forEach(r=>{
+          const k=`${r.date||''}|${r.venue||''}|${r.raceNo||''}`;
+          const prev=byKey[k];
+          if(!prev){byKey[k]=r;return;}
+          if((r.id||0)>(prev.id||0)){toDelete.push(prev.id);byKey[k]=r;}
+          else{toDelete.push(r.id);}
+        });
+        if(toDelete.length>0){
+          console.log(`[startup] 重複レース ${toDelete.length}件 を自動削除`);
+          for(const id of toDelete){await dbDel('raceResults',id);}
+        }
+      }catch(e){console.warn('startup dedup failed:',e);}
       reload().then(()=>setLoaded(true));
     });
   },[reload]);
