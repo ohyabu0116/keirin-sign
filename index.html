@@ -1385,6 +1385,7 @@ function runAnalysis({entries,raceResults,signConditions,players,discoveries=[],
   const pmByReg={};players.forEach(p=>{if(p.regNo)pmByReg[String(p.regNo).padStart(6,'0')]=p});
   const alerts=[];
   const linkedSet=new Set();
+  const killSet=new Set();  // 消し目 (3着内に入りにくい車番) → 買い目から除外
 
   for(const cond of signConditions){
     if(!cond.active) continue;
@@ -1572,7 +1573,7 @@ function runAnalysis({entries,raceResults,signConditions,players,discoveries=[],
     alerts.push({type:'VENUE_CAR_HABIT',status:d.side==='kill'?'KILL':'AXIS',
       syaban:Number(d.syaban),side:d.side,venue:d.venue,racerCount:d.racerCount,
       rate:d.rate,trials:d.trials,desc:describeSign(d)});
-    if(d.side!=='kill')linkedSet.add(Number(d.syaban));
+    if(d.side==='kill')killSet.add(Number(d.syaban));else linkedSet.add(Number(d.syaban));
   });
   // 自動発見: 脚質の車番グセ (軸/消し)
   discoveries.filter(d=>d.type==='KYAKU_CAR_HABIT'&&d.active!==false).forEach(d=>{
@@ -1582,13 +1583,17 @@ function runAnalysis({entries,raceResults,signConditions,players,discoveries=[],
     alerts.push({type:'KYAKU_CAR_HABIT',status:d.side==='kill'?'KILL':'AXIS',
       syaban:Number(d.syaban),side:d.side,kyaku:d.kyaku,racerCount:d.racerCount,
       rate:d.rate,trials:d.trials,desc:describeSign(d)});
-    if(d.side!=='kill')linkedSet.add(Number(d.syaban));
+    if(d.side==='kill')killSet.add(Number(d.syaban));else linkedSet.add(Number(d.syaban));
   });
 
   // 買い目生成
   const activeBoats=Array.from(new Set(entries.filter(e=>e.regNo).map(e=>Number(e.syaban)))).sort((a,b)=>a-b);
+  // 連動(軸)に入っている車番は個別サイン優先で消し対象から除外
+  linkedSet.forEach(n=>killSet.delete(n));
+  const killed=[...killSet].filter(n=>activeBoats.includes(n));
   const linked=[...linkedSet].filter(n=>activeBoats.includes(n));
-  const others=activeBoats.filter(n=>!linked.includes(n));
+  // 相手(3着候補)から消し目を除外して点数を絞る
+  const others=activeBoats.filter(n=>!linked.includes(n)&&!killSet.has(n));
   const tickets=[];
 
   if(linked.length>=3){
@@ -1614,7 +1619,7 @@ function runAnalysis({entries,raceResults,signConditions,players,discoveries=[],
     });
   }
 
-  return{alerts,linked:[...linkedSet],tickets:tickets.slice(0,24)};
+  return{alerts,linked:[...linkedSet],killed,tickets:tickets.slice(0,24)};
 }
 
 /* ====================================================================
@@ -1941,7 +1946,7 @@ function TodayScreen({players,raceResults,signConditions,discoveries=[],reload})
 
 function AnalysisResult({result,entries,pmByReg}){
   if(!result) return null;
-  const{alerts,linked,tickets}=result;
+  const{alerts,linked,killed=[],tickets}=result;
   return(
     <>
       <div className="card">
@@ -1983,6 +1988,22 @@ function AnalysisResult({result,entries,pmByReg}){
           <div className="card-title">連動艇 ({linked.length}艇)</div>
           <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
             {linked.map(n=><Chip key={n} no={n} size="lg"/>)}
+          </div>
+        </div>
+      )}
+
+      {killed.length>0&&(
+        <div className="card">
+          <div className="card-title" style={{color:'var(--text2)'}}>消し目 ({killed.length}艇)</div>
+          <div style={{display:'flex',gap:'6px',flexWrap:'wrap',alignItems:'center'}}>
+            {killed.map(n=>(
+              <span key={n} style={{position:'relative',display:'inline-flex'}}>
+                <Chip no={n} size="lg"/>
+                <span style={{position:'absolute',inset:0,display:'flex',alignItems:'center',
+                  justifyContent:'center',fontSize:'24px',color:'#e44',fontWeight:'900',pointerEvents:'none'}}>╳</span>
+              </span>
+            ))}
+            <span style={{fontSize:'11px',color:'var(--text2)',marginLeft:'4px'}}>※買い目の相手から自動除外</span>
           </div>
         </div>
       )}
@@ -3027,7 +3048,7 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
   const analyzed=useMemo(()=>{
     const todayRaces=dedupRaces(raceResults.filter(r=>r.date===today));
     return todayRaces.map(r=>{
-      const {alerts,linked,tickets}=runAnalysis({
+      const {alerts,linked,killed,tickets}=runAnalysis({
         entries:r.entries||[],raceResults,signConditions,players,discoveries,venue:r.venue
       });
       const withResult=alerts.map(a=>{
@@ -3068,7 +3089,7 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
         }
         return{...a,connected};
       });
-      return{...r,alerts:withResult,linked,tickets};
+      return{...r,alerts:withResult,linked,killed,tickets};
     }).filter(r=>r.alerts.length>0).sort((a,b)=>(a.venue||'').localeCompare(b.venue)||a.raceNo-b.raceNo);
   },[raceResults,signConditions,players,discoveries,today]);
 
@@ -3261,6 +3282,20 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
                 </div>
               );
             })}
+            {race.killed&&race.killed.length>0&&(
+              <div style={{display:'flex',gap:'6px',alignItems:'center',flexWrap:'wrap',marginTop:'4px',
+                padding:'6px 10px',borderRadius:'8px',background:'rgba(228,68,68,0.06)',border:'1px dashed rgba(228,68,68,0.4)'}}>
+                <span style={{fontSize:'11px',fontWeight:'700',color:'#e44'}}>消し目</span>
+                {race.killed.map(n=>(
+                  <span key={n} style={{position:'relative',display:'inline-flex'}}>
+                    <Chip no={n} size="sm"/>
+                    <span style={{position:'absolute',inset:0,display:'flex',alignItems:'center',
+                      justifyContent:'center',fontSize:'16px',color:'#e44',fontWeight:'900',pointerEvents:'none'}}>╳</span>
+                  </span>
+                ))}
+                <span style={{fontSize:'10px',color:'var(--text2)'}}>※買い目の相手から自動除外</span>
+              </div>
+            )}
           </div>
         );
       })}
