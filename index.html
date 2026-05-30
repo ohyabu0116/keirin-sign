@@ -3986,7 +3986,24 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
     setRunning(true); setResults(null); setProgress(null);
     cancelRef.current={cancelled:false};
     try{
-      const validRaces=dedupRaces(raceResults).filter(r=>r.result1&&r.entries&&r.entries.length>0);
+      // 診断: フィルタの内訳を計算
+      const total=raceResults.length;
+      const dedupedAll=dedupRaces(raceResults);
+      const afterDedup=dedupedAll.length;
+      const dupRemoved=total-afterDedup;
+      const withResult=dedupedAll.filter(r=>r.result1).length;
+      const withEntries=dedupedAll.filter(r=>r.entries&&r.entries.length>0).length;
+      const validRaces=dedupedAll.filter(r=>r.result1&&r.entries&&r.entries.length>0);
+      const noResult=dedupedAll.filter(r=>!r.result1).length;
+      const noEntries=dedupedAll.filter(r=>!r.entries||r.entries.length===0).length;
+
+      console.log('[マイニング診断]',{
+        total,afterDedup,dupRemoved,withResult,withEntries,
+        valid:validRaces.length,noResult,noEntries,
+      });
+
+      setProgress({phase:'diag',message:`診断: 総${total} → 重複除去後${afterDedup}件 (重複${dupRemoved}件) → 結果あり${withResult}件 / 出走表あり${withEntries}件 → 有効${validRaces.length}件 (結果なし${noResult}/出走表なし${noEntries})`,progress:0});
+      await new Promise(r=>setTimeout(r,500));  // 表示時間確保
       const playerMap={};
       players.forEach(p=>{if(p.regNo)playerMap[String(p.regNo).padStart(6,'0')]=p;});
       validRaces.forEach(r=>{
@@ -4869,7 +4886,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v1.8<br/>
+          競輪サイン予想 v1.9<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -4988,7 +5005,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.8</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.9</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
