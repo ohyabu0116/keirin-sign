@@ -1116,6 +1116,112 @@ function mineClientSide(races, players, opts={}){
 }
 
 // サインの自然言語定義を生成
+/* ====================================================================
+   統計ユーティリティ (Wilson信頼区間下限、時間重み)
+==================================================================== */
+function wilsonLowerBound(hits, trials, confidence=0.95){
+  if(trials===0)return 0;
+  const z=confidence===0.95?1.96:confidence===0.99?2.576:1.645;
+  const p=hits/trials;
+  const n=trials;
+  const denom=1+z*z/n;
+  const center=(p+z*z/(2*n))/denom;
+  const spread=z*Math.sqrt((p*(1-p)+z*z/(4*n))/n)/denom;
+  return Math.max(0,Math.min(1,center-spread));
+}
+
+function timeWeightedRate(hits, trials, allEvents){
+  /* allEvents: [{date: YYYY-MM-DD, hit: boolean}] sorted by date asc
+     Recent events weighted higher (exponential decay) */
+  if(!allEvents||allEvents.length===0)return null;
+  const today=new Date();
+  let weightedHits=0, totalWeight=0;
+  allEvents.forEach(e=>{
+    const d=new Date(e.date);
+    const daysAgo=(today-d)/86400000;
+    // 60日で半減 exponential decay
+    const weight=Math.pow(0.5, daysAgo/60);
+    totalWeight+=weight;
+    if(e.hit)weightedHits+=weight;
+  });
+  return totalWeight>0?weightedHits/totalWeight:null;
+}
+
+function getSignMatchHistory(sign, raceResults){
+  /* サインの該当履歴を {date, venue, raceNo, hit} の配列で返す */
+  const dedup=dedupRaces(raceResults).filter(r=>r.result1&&r.entries);
+  const history=[];
+  const type=sign.type||sign.conditionType;
+  for(const r of dedup){
+    const ents=r.entries||[];
+    const top3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+    let isMatch=false, isHit=false;
+    if(type==='PLAYER_SYABAN_LINK'){
+      const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===Number(sign.syaban));
+      if(myE){isMatch=true;isHit=top3.includes(Number(sign.linkedSyaban));}
+    }else if(type==='PLAYER_SYABAN_PAIR_LINK'){
+      const pair=Array.isArray(sign.linkedPair)?sign.linkedPair.map(Number):[];
+      const myE=ents.find(e=>String(e.regNo)===String(sign.regNo)&&Number(e.syaban)===Number(sign.syaban));
+      if(myE&&pair.length===2){isMatch=true;isHit=pair.every(n=>top3.includes(n));}
+    }else if(type==='PLAYER_COMBO_LINK'){
+      const a=ents.find(e=>String(e.regNo)===String(sign.regA)&&Number(e.syaban)===Number(sign.syaA));
+      const b=ents.find(e=>String(e.regNo)===String(sign.regB)&&Number(e.syaban)===Number(sign.syaB));
+      if(a&&b){isMatch=true;isHit=top3.includes(Number(sign.linkedSyaban));}
+    }else if(type==='PLAYER_COMBO_PAIR_LINK'){
+      const a=ents.find(e=>String(e.regNo)===String(sign.regA)&&Number(e.syaban)===Number(sign.syaA));
+      const b=ents.find(e=>String(e.regNo)===String(sign.regB)&&Number(e.syaban)===Number(sign.syaB));
+      const pair=Array.isArray(sign.linkedPair)?sign.linkedPair.map(Number):[];
+      if(a&&b&&pair.length===2){isMatch=true;isHit=pair.every(n=>top3.includes(n));}
+    }
+    if(isMatch)history.push({date:r.date,venue:r.venue,raceNo:r.raceNo,hit:isHit});
+  }
+  history.sort((a,b)=>(a.date||'').localeCompare(b.date||''));
+  return history;
+}
+
+function evaluateSign(sign, raceResults){
+  /* サインを多角的に評価
+     return: {
+       trials, hits, rate,
+       wilsonLower (信頼区間下限),
+       recent30Trials, recent30Hits, recent30Rate,
+       weightedRate,
+       grade: 'A'|'B'|'C',
+       issues: [...]
+     } */
+  const history=getSignMatchHistory(sign,raceResults);
+  const trials=history.length;
+  const hits=history.filter(h=>h.hit).length;
+  const rate=trials>0?hits/trials:0;
+  const wilsonLower=wilsonLowerBound(hits,trials);
+
+  // 直近30日
+  const today=new Date();
+  const _30daysAgo=new Date(today.getTime()-30*86400000).toISOString().slice(0,10);
+  const recent30=history.filter(h=>h.date>=_30daysAgo);
+  const recent30Trials=recent30.length;
+  const recent30Hits=recent30.filter(h=>h.hit).length;
+  const recent30Rate=recent30Trials>0?recent30Hits/recent30Trials:null;
+
+  // 時間重み
+  const weightedRate=timeWeightedRate(hits,trials,history);
+
+  // 評価
+  const issues=[];
+  if(trials<5)issues.push('試行回数不足');
+  if(wilsonLower<0.5)issues.push(`信頼下限が低い (${Math.round(wilsonLower*100)}%)`);
+  if(recent30Trials>=3&&recent30Rate<0.5)issues.push(`直近30日の連動率低下 (${Math.round(recent30Rate*100)}%)`);
+
+  let grade='C';
+  if(wilsonLower>=0.7&&(recent30Trials<3||recent30Rate>=0.7))grade='A';
+  else if(wilsonLower>=0.6||(recent30Trials>=3&&recent30Rate>=0.7))grade='B';
+
+  return {trials,hits,rate:Math.round(rate*1000)/10,wilsonLower:Math.round(wilsonLower*1000)/10,
+    recent30Trials,recent30Hits,recent30Rate:recent30Rate!=null?Math.round(recent30Rate*1000)/10:null,
+    weightedRate:weightedRate!=null?Math.round(weightedRate*1000)/10:null,
+    grade,issues,history};
+}
+
 function describeSign(s){
   const type=s.type||s.conditionType;
   const rate=s.rate?` (${s.rate}%)`:'';
@@ -3869,6 +3975,100 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[],reload}){
 /* ====================================================================
    データ検証画面 (A整合性 + B信頼性 + C異常値)
 ==================================================================== */
+function PrecisionReview({discoveries,raceResults,reload}){
+  const[running,setRunning]=useState(false);
+  const[review,setReview]=useState(null);
+
+  const runReview=async()=>{
+    setRunning(true);
+    await new Promise(r=>setTimeout(r,30));
+    const uniq=dedupSigns(discoveries.filter(d=>d.active!==false));
+    const evaluated=uniq.map(s=>({sign:s,eval:evaluateSign(s,raceResults)}));
+    evaluated.sort((a,b)=>{
+      const o={'A':0,'B':1,'C':2};
+      return o[a.eval.grade]-o[b.eval.grade]||b.eval.wilsonLower-a.eval.wilsonLower;
+    });
+    setReview(evaluated);
+    setRunning(false);
+  };
+
+  const disableAllC=async()=>{
+    if(!review)return;
+    const cSigns=review.filter(r=>r.eval.grade==='C');
+    if(cSigns.length===0)return alert('C評価サインはありません');
+    if(!confirm(`C評価サイン ${cSigns.length}件 を無効化しますか? (削除はしません、有効/無効トグル)`))return;
+    for(const {sign} of cSigns){
+      await dbPut('discoveries',{...sign,active:false});
+    }
+    alert(`${cSigns.length}件を無効化しました`);
+    reload();
+    setReview(null);
+  };
+
+  const A=review?review.filter(r=>r.eval.grade==='A'):[];
+  const B=review?review.filter(r=>r.eval.grade==='B'):[];
+  const C=review?review.filter(r=>r.eval.grade==='C'):[];
+
+  return(
+    <div className="card" style={{borderColor:'var(--accent)',borderWidth:'2px'}}>
+      <div className="card-title" style={{color:'var(--accent)'}}>🧪 サイン精度の再評価</div>
+      <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
+        採用済みサインを統計的に再評価:<br/>
+        • <strong>ウィルソン信頼区間下限</strong> (試行数が少ない100%サインの過信を防止)<br/>
+        • <strong>直近30日の連動率</strong> (劣化サインを検出)<br/>
+        • <strong>時間重み付き連動率</strong> (新しいデータほど重視)<br/>
+        → A/B/C で総合評価
+      </p>
+      <button className="btn btn-primary" onClick={runReview} disabled={running} style={{width:'100%'}}>
+        {running?'⏳ 評価中...':'▶ 全採用サインを再評価'}
+      </button>
+      {review&&(<>
+        <div style={{marginTop:'14px',padding:'10px',background:'var(--bg3)',borderRadius:'6px',fontSize:'12px'}}>
+          <div style={{display:'flex',gap:'14px',flexWrap:'wrap'}}>
+            <span><strong style={{color:'var(--green)'}}>A評価 {A.length}件</strong> 信頼下限70%+&直近70%+</span>
+            <span><strong style={{color:'var(--yellow)'}}>B評価 {B.length}件</strong> どちらか一方</span>
+            <span><strong style={{color:'var(--red)'}}>C評価 {C.length}件</strong> 両方低い</span>
+          </div>
+          {C.length>0&&<button className="btn btn-sm btn-danger" style={{marginTop:'10px'}} onClick={disableAllC}>C評価 {C.length}件 を無効化</button>}
+        </div>
+
+        <div style={{maxHeight:'600px',overflowY:'auto',marginTop:'10px'}}>
+          {review.map(({sign,eval:ev},i)=>{
+            const c=ev.grade==='A'?'var(--green)':ev.grade==='B'?'var(--yellow)':'var(--red)';
+            return(
+              <div key={i} className="hist-item" style={{borderColor:c,borderWidth:'2px'}}>
+                <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap',marginBottom:'5px'}}>
+                  <span style={{fontWeight:'900',fontSize:'18px',color:c,minWidth:'24px'}}>{ev.grade}</span>
+                  <span style={{fontSize:'12px',flex:1,minWidth:'200px'}}>{describeSign(sign)}</span>
+                </div>
+                <div style={{display:'flex',gap:'12px',flexWrap:'wrap',fontSize:'11px',color:'var(--text2)',padding:'5px 8px',background:'rgba(0,0,0,0.03)',borderRadius:'5px'}}>
+                  <span>全期間 <strong>{ev.rate}%</strong> ({ev.hits}/{ev.trials})</span>
+                  <span>信頼下限 <strong style={{color:ev.wilsonLower>=70?'var(--green)':ev.wilsonLower>=50?'var(--yellow)':'var(--red)'}}>{ev.wilsonLower}%</strong></span>
+                  {ev.recent30Rate!=null&&<span>直近30日 <strong style={{color:ev.recent30Rate>=70?'var(--green)':ev.recent30Rate>=50?'var(--yellow)':'var(--red)'}}>{ev.recent30Rate}%</strong> ({ev.recent30Hits}/{ev.recent30Trials})</span>}
+                  {ev.recent30Rate==null&&ev.recent30Trials===0&&<span style={{color:'var(--text2)'}}>直近30日 該当なし</span>}
+                  {ev.weightedRate!=null&&<span>時間重み <strong>{ev.weightedRate}%</strong></span>}
+                </div>
+                {ev.issues.length>0&&(
+                  <div style={{fontSize:'10px',color:'var(--red)',marginTop:'5px'}}>
+                    ⚠️ {ev.issues.join(' / ')}
+                  </div>
+                )}
+                <div style={{display:'flex',gap:'5px',marginTop:'6px'}}>
+                  {sign.active!==false?
+                    <button className="btn btn-sm btn-ghost" onClick={async()=>{await dbPut('discoveries',{...sign,active:false});reload();setReview(null);}}>無効化</button>:
+                    <button className="btn btn-sm btn-success" onClick={async()=>{await dbPut('discoveries',{...sign,active:true});reload();setReview(null);}}>有効化</button>
+                  }
+                  <button className="btn btn-sm btn-danger" onClick={async()=>{if(confirm('削除しますか?')){await dbDel('discoveries',sign.id);reload();setReview(null);}}}>削除</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </>)}
+    </div>
+  );
+}
+
 function ValidationScreen({raceResults,signConditions,discoveries=[],players,reload}){
   const[running,setRunning]=useState(false);
   const[result,setResult]=useState(null);
@@ -4038,6 +4238,7 @@ function ValidationScreen({raceResults,signConditions,discoveries=[],players,rel
 
   return(
     <div>
+      <PrecisionReview discoveries={discoveries} raceResults={raceResults} reload={reload}/>
       <div className="card" style={{borderColor:'var(--accent)',borderWidth:'2px'}}>
         <div className="card-title" style={{color:'var(--accent)'}}>💎 ROI+ サイン総動員マイニング</div>
         <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
@@ -4420,7 +4621,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v1.5<br/>
+          競輪サイン予想 v1.6<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -4539,7 +4740,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.5</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.6</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
