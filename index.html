@@ -4138,6 +4138,7 @@ function AnomalyHunter({raceResults,players,discoveries,reload}){
   const[minRate,setMinRate]=useState(100);
   const[habitRunning,setHabitRunning]=useState(false);
   const[habitResults,setHabitResults]=useState(null);
+  const[habitStrict,setHabitStrict]=useState('extreme');
   const[linkAdopting,setLinkAdopting]=useState(false);
   const cancelRef=useRef({cancelled:false});
 
@@ -4145,6 +4146,12 @@ function AnomalyHunter({raceResults,players,discoveries,reload}){
   const runHabits=async()=>{
     setHabitRunning(true); setHabitResults(null);
     try{
+      // 厳選度: extreme=極端のみ / standard=標準 / all=全部
+      const TH={
+        extreme:{vDev:0.25,vTrials:50,vDays:7,kDev:0.22,kTrials:150},
+        standard:{vDev:0.20,vTrials:40,vDays:5,kDev:0.18,kTrials:80},
+        all:{vDev:0.15,vTrials:30,vDays:4,kDev:0.13,kTrials:60},
+      }[habitStrict]||{vDev:0.25,vTrials:50,vDays:7,kDev:0.22,kTrials:150};
       const validRaces=dedupRaces(raceResults).filter(r=>r.result1&&r.entries&&r.entries.length>0);
       const vmap={}; // venue|rc|car
       const kmap={}; // kyaku|rc|car
@@ -4167,24 +4174,24 @@ function AnomalyHunter({raceResults,players,discoveries,reload}){
       const r1=n=>Math.round(n*1000)/10;
       const venueHabit=[],kyakuHabit=[];
       Object.entries(vmap).forEach(([key,v])=>{
-        if(v.t<40||v.days.size<5)return; // 1開催だけの偽物を除外
+        if(v.t<TH.vTrials||v.days.size<TH.vDays)return; // 1開催だけの偽物を除外
         const[venue,rcStr,cStr]=key.split('|');
         const rc=Number(rcStr),c=Number(cStr),base=3/rc,rate=v.h/v.t,dev=rate-base;
-        if(dev>=0.20)venueHabit.push({type:'VENUE_CAR_HABIT',venue,racerCount:rc,syaban:c,side:'axis',
+        if(dev>=TH.vDev)venueHabit.push({type:'VENUE_CAR_HABIT',venue,racerCount:rc,syaban:c,side:'axis',
           rate:r1(rate),top3rate:r1(rate),trials:v.t,hits:v.h,baseline:r1(base),dev:r1(dev),days:v.days.size,
           desc:`${venue}の${rc}車立て ${c}番車は3着内 ${r1(rate)}% (${v.h}/${v.t}) 基準${r1(base)}%＝軸`});
-        else if(dev<=-0.20)venueHabit.push({type:'VENUE_CAR_HABIT',venue,racerCount:rc,syaban:c,side:'kill',
+        else if(dev<=-TH.vDev)venueHabit.push({type:'VENUE_CAR_HABIT',venue,racerCount:rc,syaban:c,side:'kill',
           rate:r1(1-rate),top3rate:r1(rate),trials:v.t,hits:v.t-v.h,baseline:r1(base),dev:r1(dev),days:v.days.size,
           desc:`${venue}の${rc}車立て ${c}番車は3着内 ${r1(rate)}%しかない (${v.h}/${v.t}) 基準${r1(base)}%＝消し`});
       });
       Object.entries(kmap).forEach(([key,v])=>{
-        if(v.t<80)return;
+        if(v.t<TH.kTrials)return;
         const[kyaku,rcStr,cStr]=key.split('|');
         const rc=Number(rcStr),c=Number(cStr),base=3/rc,rate=v.h/v.t,dev=rate-base;
-        if(dev>=0.18)kyakuHabit.push({type:'KYAKU_CAR_HABIT',kyaku,racerCount:rc,syaban:c,side:'axis',
+        if(dev>=TH.kDev)kyakuHabit.push({type:'KYAKU_CAR_HABIT',kyaku,racerCount:rc,syaban:c,side:'axis',
           rate:r1(rate),top3rate:r1(rate),trials:v.t,hits:v.h,baseline:r1(base),dev:r1(dev),
           desc:`${rc}車立て「${kyaku}」が${c}番車→3着内 ${r1(rate)}% (${v.h}/${v.t}) 基準${r1(base)}%＝軸`});
-        else if(dev<=-0.18)kyakuHabit.push({type:'KYAKU_CAR_HABIT',kyaku,racerCount:rc,syaban:c,side:'kill',
+        else if(dev<=-TH.kDev)kyakuHabit.push({type:'KYAKU_CAR_HABIT',kyaku,racerCount:rc,syaban:c,side:'kill',
           rate:r1(1-rate),top3rate:r1(rate),trials:v.t,hits:v.t-v.h,baseline:r1(base),dev:r1(dev),
           desc:`${rc}車立て「${kyaku}」が${c}番車→3着内 ${r1(rate)}%しかない (${v.h}/${v.t}) 基準${r1(base)}%＝消し`});
       });
@@ -4581,6 +4588,13 @@ function AnomalyHunter({raceResults,players,discoveries,reload}){
           試行数の多い<strong>頑健な異常値</strong>。「この競輪場のこの車番は軸/消し」「この脚質がこの車番だと軸/消し」を全データから抽出。<br/>
           連動一括採用は<strong>3会場以上で100%</strong>成立する選手連動だけ＝同一シリーズ連戦の水増しを除いた本物のみ。
         </p>
+        <label style={{fontSize:'12px',display:'flex',gap:'6px',alignItems:'center',marginBottom:'8px'}}>
+          厳選度: <select className="sel" value={habitStrict} onChange={e=>setHabitStrict(e.target.value)}>
+            <option value="extreme">極端のみ (基準比±25pt〜・厳選)</option>
+            <option value="standard">標準 (±20pt〜)</option>
+            <option value="all">全部 (±15pt〜)</option>
+          </select>
+        </label>
         <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
           <button className="btn btn-sm btn-primary" disabled={habitRunning} onClick={runHabits} style={{flex:'1 1 45%',background:'var(--green)'}}>
             {habitRunning?'⏳ 抽出中...':'🏟️ 場・脚質のクセを抽出'}
