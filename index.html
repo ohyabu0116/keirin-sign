@@ -680,6 +680,43 @@ function permutations(arr,r){
 /* ====================================================================
    クライアントサイド マイニング (サーバーなしでも動作)
 ==================================================================== */
+/* 高速一括削除 (IndexedDB単一トランザクションでN件削除) */
+async function bulkDeleteRaces(idsToDelete,onProgress){
+  if(!idsToDelete||idsToDelete.length===0)return;
+  const db=await _getIDB();
+  const BATCH=500;  // 1トランザクションに収める件数
+  let done=0;
+  for(let i=0;i<idsToDelete.length;i+=BATCH){
+    const batch=idsToDelete.slice(i,i+BATCH);
+    await new Promise((res,rej)=>{
+      const t=db.transaction('raceResults','readwrite');
+      const s=t.objectStore('raceResults');
+      batch.forEach(id=>s.delete(id));
+      t.oncomplete=()=>res();
+      t.onerror=()=>rej(t.error);
+    });
+    done+=batch.length;
+    if(onProgress)onProgress(done,idsToDelete.length);
+  }
+}
+
+/* 重複レースを検出して削除 (新しい id を残す) */
+async function dedupRaceResultsDB(onProgress){
+  const races=await dbAll('raceResults');
+  const byKey={};
+  const toDelete=[];
+  races.forEach(r=>{
+    const k=`${r.date||''}|${r.venue||''}|${r.raceNo||''}`;
+    const prev=byKey[k];
+    if(!prev){byKey[k]=r;return;}
+    if((r.id||0)>(prev.id||0)){toDelete.push(prev.id);byKey[k]=r;}
+    else{toDelete.push(r.id);}
+  });
+  if(toDelete.length===0)return 0;
+  await bulkDeleteRaces(toDelete,onProgress);
+  return toDelete.length;
+}
+
 // サインの一意キーを生成 (データ型ゆれにも対応)
 function signKey(s){
   const norm=(v)=>v==null?'':String(v).trim();
@@ -3986,24 +4023,39 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
     setRunning(true); setResults(null); setProgress(null);
     cancelRef.current={cancelled:false};
     try{
-      // 診断: フィルタの内訳を計算
       const total=raceResults.length;
       const dedupedAll=dedupRaces(raceResults);
-      const afterDedup=dedupedAll.length;
-      const dupRemoved=total-afterDedup;
-      const withResult=dedupedAll.filter(r=>r.result1).length;
-      const withEntries=dedupedAll.filter(r=>r.entries&&r.entries.length>0).length;
-      const validRaces=dedupedAll.filter(r=>r.result1&&r.entries&&r.entries.length>0);
-      const noResult=dedupedAll.filter(r=>!r.result1).length;
-      const noEntries=dedupedAll.filter(r=>!r.entries||r.entries.length===0).length;
+      const dupRemoved=total-dedupedAll.length;
+
+      // 重複が500件以上あれば自動削除 (3万件規模に対応)
+      if(dupRemoved>=500){
+        setProgress({phase:'cleanup',message:`重複レース ${dupRemoved.toLocaleString()}件 を削除中...`,progress:0});
+        await new Promise(r=>setTimeout(r,50));
+        const deleted=await dedupRaceResultsDB((done,tot)=>{
+          setProgress({phase:'cleanup',message:`削除中 ${done.toLocaleString()}/${tot.toLocaleString()}件`,progress:done/tot});
+        });
+        setProgress({phase:'cleanup',message:`✓ 重複 ${deleted.toLocaleString()}件 を削除しました。データ再読み込み中...`,progress:1});
+        await reload();
+        await new Promise(r=>setTimeout(r,300));
+      }
+
+      // 再評価
+      const refreshedRaces=await dbAll('raceResults');
+      const dedupedAll2=dedupRaces(refreshedRaces);
+      const afterDedup=dedupedAll2.length;
+      const withResult=dedupedAll2.filter(r=>r.result1).length;
+      const withEntries=dedupedAll2.filter(r=>r.entries&&r.entries.length>0).length;
+      const validRaces=dedupedAll2.filter(r=>r.result1&&r.entries&&r.entries.length>0);
+      const noResult=dedupedAll2.filter(r=>!r.result1).length;
+      const noEntries=dedupedAll2.filter(r=>!r.entries||r.entries.length===0).length;
 
       console.log('[マイニング診断]',{
-        total,afterDedup,dupRemoved,withResult,withEntries,
+        total:refreshedRaces.length,afterDedup,withResult,withEntries,
         valid:validRaces.length,noResult,noEntries,
       });
 
-      setProgress({phase:'diag',message:`診断: 総${total} → 重複除去後${afterDedup}件 (重複${dupRemoved}件) → 結果あり${withResult}件 / 出走表あり${withEntries}件 → 有効${validRaces.length}件 (結果なし${noResult}/出走表なし${noEntries})`,progress:0});
-      await new Promise(r=>setTimeout(r,500));  // 表示時間確保
+      setProgress({phase:'diag',message:`診断: 総${refreshedRaces.length.toLocaleString()}件 → 有効${validRaces.length.toLocaleString()}件 (結果なし${noResult.toLocaleString()}/出走表なし${noEntries.toLocaleString()})`,progress:0});
+      await new Promise(r=>setTimeout(r,500));
       const playerMap={};
       players.forEach(p=>{if(p.regNo)playerMap[String(p.regNo).padStart(6,'0')]=p;});
       validRaces.forEach(r=>{
@@ -4750,19 +4802,16 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
   const dedupDB=async()=>{
     const races=await dbAll('raceResults');
     const byKey={};
-    const toDelete=[];
+    let dupCount=0;
     races.forEach(r=>{
       const k=`${r.date||''}|${r.venue||''}|${r.raceNo||''}`;
-      const prev=byKey[k];
-      if(!prev){byKey[k]=r;return;}
-      // id大きい方=新しいものを残す
-      if((r.id||0)>(prev.id||0)){toDelete.push(prev.id);byKey[k]=r;}
-      else{toDelete.push(r.id);}
+      if(byKey[k])dupCount++;
+      else byKey[k]=r;
     });
-    if(toDelete.length===0)return alert('重複レースはありませんでした');
-    if(!confirm(`重複レース ${toDelete.length}件 を削除します。よろしいですか?`))return;
-    for(const id of toDelete){await dbDel('raceResults',id);}
-    alert(`${toDelete.length}件の重複レースを削除しました`);
+    if(dupCount===0)return alert('重複レースはありませんでした');
+    if(!confirm(`重複レース ${dupCount.toLocaleString()}件 を削除します。\n(${races.length.toLocaleString()}件 → ${(races.length-dupCount).toLocaleString()}件)`))return;
+    const deleted=await dedupRaceResultsDB();
+    alert(`${deleted.toLocaleString()}件の重複レースを削除しました`);
     reload();
   };
 
@@ -4886,7 +4935,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v1.9<br/>
+          競輪サイン予想 v2.0<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -4932,22 +4981,12 @@ function App(){
   useEffect(()=>{
     initStorage().then(async m=>{
       setConnected(m==='local');
-      // 起動時に重複レースを自動クリーンアップ
+      // 起動時に重複レースを自動クリーンアップ (高速一括削除版)
       try{
-        const races=await dbAll('raceResults');
-        const byKey={};
-        const toDelete=[];
-        races.forEach(r=>{
-          const k=`${r.date||''}|${r.venue||''}|${r.raceNo||''}`;
-          const prev=byKey[k];
-          if(!prev){byKey[k]=r;return;}
-          if((r.id||0)>(prev.id||0)){toDelete.push(prev.id);byKey[k]=r;}
-          else{toDelete.push(r.id);}
+        const deleted=await dedupRaceResultsDB((done,tot)=>{
+          if(done%2000===0)console.log(`[startup] 重複削除 ${done}/${tot}`);
         });
-        if(toDelete.length>0){
-          console.log(`[startup] 重複レース ${toDelete.length}件 を自動削除`);
-          for(const id of toDelete){await dbDel('raceResults',id);}
-        }
+        if(deleted>0)console.log(`[startup] 重複レース ${deleted}件 を自動削除完了`);
         // 同様にdiscoveriesも重複削除
         const discs=await dbAll('discoveries');
         const seenKeys=new Map();
@@ -5005,7 +5044,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.9</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.0</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
