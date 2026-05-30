@@ -4067,6 +4067,245 @@ function PerformanceScreen({raceResults,signConditions,discoveries=[],reload}){
 /* ====================================================================
    データ検証画面 (A整合性 + B信頼性 + C異常値)
 ==================================================================== */
+function CompoundADiscovery({raceResults,players,discoveries,reload}){
+  const[running,setRunning]=useState(false);
+  const[progress,setProgress]=useState(null);
+  const[results,setResults]=useState(null);
+  const cancelRef=useRef({cancelled:false});
+
+  const runMining=async()=>{
+    setRunning(true); setResults(null); setProgress(null);
+    cancelRef.current={cancelled:false};
+    try{
+      const validRaces=dedupRaces(raceResults).filter(r=>r.result1&&r.entries&&r.entries.length>0);
+      const playerMap={};
+      players.forEach(p=>{if(p.regNo)playerMap[String(p.regNo).padStart(6,'0')]=p;});
+      validRaces.forEach(r=>{
+        (r.entries||[]).forEach(e=>{
+          const rn=String(e.regNo||'').padStart(6,'0');
+          if(rn&&!playerMap[rn]&&e.name)playerMap[rn]={regNo:rn,name:e.name};
+        });
+      });
+
+      setProgress({phase:'building',message:'複合条件の探索準備中...',progress:0});
+      await new Promise(r=>setTimeout(r,30));
+
+      // (regNo, syaban) → 該当レース履歴
+      const histByKey={};
+      validRaces.forEach(r=>{
+        const top3=new Set([r.result1,r.result2,r.result3].filter(Boolean).map(Number));
+        const entryKeys=(r.entries||[]).map(e=>{
+          const rn=String(e.regNo||'').padStart(6,'0');
+          const sy=Number(e.syaban);
+          return rn&&sy?`${rn}|${sy}`:null;
+        }).filter(Boolean);
+        (r.entries||[]).forEach(e=>{
+          const rn=String(e.regNo||'').padStart(6,'0');
+          const sy=Number(e.syaban);
+          if(!rn||!sy)return;
+          const k=`${rn}|${sy}`;
+          (histByKey[k]=histByKey[k]||[]).push({date:r.date,top3,entryKeys});
+        });
+      });
+
+      const today=new Date();
+      const _30daysAgo=new Date(today.getTime()-30*86400000).toISOString().slice(0,10);
+      const keys=Object.keys(histByKey).filter(k=>histByKey[k].length>=5);
+
+      const candidates=[];
+      const seen=new Set();
+
+      for(let ki=0;ki<keys.length;ki++){
+        if(cancelRef.current.cancelled)break;
+        const key1=keys[ki];
+        const [rn1,sy1Str]=key1.split('|');
+        const sy1=Number(sy1Str);
+        const hist1=histByKey[key1];
+
+        // 各 (n1, n2) を仮定
+        for(let n1=1;n1<=9;n1++){
+          if(n1===sy1)continue;
+          for(let n2=n1+1;n2<=9;n2++){
+            if(n2===sy1)continue;
+
+            // base のhit/trial
+            let baseHits=0;
+            hist1.forEach(h=>{if(h.top3.has(n1)&&h.top3.has(n2))baseHits++;});
+            const baseRate=hist1.length>0?baseHits/hist1.length:0;
+            // 既に強い(>=85%)場合は単独でも検出可能なのでスキップ
+            // 弱すぎる(<40%)場合は複合しても上がりにくいのでスキップ
+            if(baseRate>=0.85||baseRate<0.4)continue;
+
+            // 同レース内の各 (regNo2, syaban2) を companion として試す
+            const companionMap={};  // k2 -> {trials, hits, recent30Trials, recent30Hits}
+            for(const h of hist1){
+              for(const k2 of h.entryKeys){
+                if(k2===key1)continue;
+                const isHit=h.top3.has(n1)&&h.top3.has(n2);
+                const m=companionMap[k2]=companionMap[k2]||{trials:0,hits:0,recent30T:0,recent30H:0,dates:[]};
+                m.trials++;
+                if(isHit)m.hits++;
+                if(h.date>=_30daysAgo){m.recent30T++;if(isHit)m.recent30H++;}
+                m.dates.push(h.date);
+              }
+            }
+
+            // companionを評価
+            for(const k2 in companionMap){
+              const m=companionMap[k2];
+              // 試行5回以上で companion 評価
+              if(m.trials<5)continue;
+              const compRate=m.hits/m.trials;
+              const compWilson=wilsonLowerBound(m.hits,m.trials);
+              const recent30Rate=m.recent30T>0?m.recent30H/m.recent30T:null;
+              const recentBad=m.recent30T>=2&&recent30Rate<0.5;
+
+              // A評価判定 (実用基準)
+              const isA=((compRate>=0.9&&m.trials>=5)||(compRate>=0.8&&m.trials>=10)||compWilson>=0.65)&&!recentBad;
+              if(!isA)continue;
+              // 改善幅: baseRate より明確に高い必要
+              if(compRate<baseRate+0.15)continue;
+
+              const [rn2,sy2Str]=k2.split('|');
+              const sy2=Number(sy2Str);
+              // 重複除去 (player A,B の順序を正規化)
+              const sigKey=[`${rn1}|${sy1}`,`${rn2}|${sy2}`].sort().join('+')+`→${n1},${n2}`;
+              if(seen.has(sigKey))continue;
+              seen.add(sigKey);
+
+              const pa=playerMap[rn1]||{name:'?'};
+              const pb=playerMap[rn2]||{name:'?'};
+              candidates.push({
+                type:'PLAYER_COMBO_PAIR_LINK',
+                regA:rn1,playerNameA:pa.name,syaA:sy1,
+                regB:rn2,playerNameB:pb.name,syaB:sy2,
+                linkedPair:[n1,n2],
+                trials:m.trials,hits:m.hits,rate:Math.round(compRate*1000)/10,
+                wilsonLower:Math.round(compWilson*1000)/10,
+                recent30Trials:m.recent30T,recent30Hits:m.recent30H,
+                recent30Rate:recent30Rate!=null?Math.round(recent30Rate*1000)/10:null,
+                baseRate:Math.round(baseRate*1000)/10,
+                improvement:Math.round((compRate-baseRate)*1000)/10,
+                desc:`「${pa.name}が${sy1}番」かつ「${pb.name}が${sy2}番」のとき → ${n1}・${n2}両方3着以内 ${Math.round(compRate*1000)/10}% (${m.hits}/${m.trials}) ※base ${Math.round(baseRate*1000)/10}%→改善+${Math.round((compRate-baseRate)*1000)/10}%`,
+              });
+            }
+          }
+        }
+
+        if(ki%100===0||ki===keys.length-1){
+          setProgress({phase:'mining',message:`${ki+1}/${keys.length}キー / 発見${candidates.length}件`,progress:(ki+1)/keys.length});
+          await new Promise(r=>setTimeout(r,0));
+        }
+      }
+
+      // 既採用除外
+      const adopted=new Set(discoveries.filter(d=>d.active!==false).map(d=>signKey(d)));
+      const newCandidates=candidates.filter(c=>!adopted.has(signKey(c)));
+
+      // ソート: rate降順 → trials降順
+      newCandidates.sort((a,b)=>b.rate-a.rate||b.trials-a.trials);
+
+      setResults(newCandidates);
+      setProgress({phase:'done',message:`完了: ${newCandidates.length}件のA評価複合条件 (既採用${candidates.length-newCandidates.length}件除外)`,progress:1});
+    }catch(e){
+      alert('エラー: '+e.message);
+    }finally{
+      setRunning(false);
+    }
+  };
+
+  const adoptOne=async(c)=>{
+    await dbPut('discoveries',{
+      type:c.type, regA:c.regA, playerNameA:c.playerNameA, syaA:c.syaA,
+      regB:c.regB, playerNameB:c.playerNameB, syaB:c.syaB,
+      linkedPair:c.linkedPair,
+      trials:c.trials, hits:c.hits, rate:c.rate,
+      desc:c.desc, active:true, adoptedAt:Date.now(),
+    });
+    reload();
+    setResults(results.filter(x=>signKey(x)!==signKey(c)));
+  };
+
+  const adoptAll=async()=>{
+    if(!results||results.length===0)return;
+    if(!confirm(`A評価複合条件 ${results.length}件 を全て採用しますか?`))return;
+    for(const c of results){
+      await dbPut('discoveries',{
+        type:c.type, regA:c.regA, playerNameA:c.playerNameA, syaA:c.syaA,
+        regB:c.regB, playerNameB:c.playerNameB, syaB:c.syaB,
+        linkedPair:c.linkedPair,
+        trials:c.trials, hits:c.hits, rate:c.rate,
+        desc:c.desc, active:true, adoptedAt:Date.now(),
+      });
+    }
+    reload();
+    alert(`${results.length}件を採用しました`);
+    setResults([]);
+  };
+
+  return(
+    <div className="card" style={{borderColor:'var(--blue)',borderWidth:'2px'}}>
+      <div className="card-title" style={{color:'var(--blue)'}}>🔬 複合条件 A評価マイニング</div>
+      <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
+        単独サインだとA評価が出にくいなら<strong>条件を追加してA評価を満たす複合ルール</strong>を探索:<br/>
+        • ベース「選手A が ○番」を、companion「+選手B が □番」で絞る<br/>
+        • 絞った結果 90%×5回以上 (A評価) なら採用候補に<br/>
+        • baseより15%以上改善している組合せだけ<br/>
+        • 既採用は除外
+      </p>
+      {!running?
+        <button className="btn btn-primary" onClick={runMining} style={{width:'100%',background:'var(--blue)'}}>
+          🔥 複合条件で A評価を発掘
+        </button>:
+        <button className="btn btn-danger" onClick={()=>{cancelRef.current.cancelled=true;}} style={{width:'100%'}}>
+          ⏹ キャンセル
+        </button>
+      }
+      {progress&&(
+        <div style={{marginTop:'10px',padding:'8px',background:'rgba(26,85,136,0.07)',borderRadius:'5px',fontSize:'11px'}}>
+          {progress.phase==='done'?'✓ ':'⏳ '}{progress.message}
+          {progress.progress!=null&&(
+            <div style={{height:'4px',background:'var(--bg3)',borderRadius:'2px',marginTop:'4px',overflow:'hidden'}}>
+              <div style={{height:'100%',width:`${progress.progress*100}%`,background:'var(--blue)'}}/>
+            </div>
+          )}
+        </div>
+      )}
+      {results&&results.length>0&&(<>
+        <div style={{display:'flex',gap:'8px',alignItems:'center',marginTop:'12px',marginBottom:'8px',flexWrap:'wrap'}}>
+          <span style={{fontWeight:'700'}}>結果 {results.length}件</span>
+          <button className="btn btn-sm btn-success" style={{marginLeft:'auto'}} onClick={adoptAll}>全て採用</button>
+        </div>
+        <div style={{maxHeight:'600px',overflowY:'auto'}}>
+          {results.slice(0,100).map((c,i)=>(
+            <div key={i} className="hist-item" style={{borderColor:'var(--green)',borderWidth:'1px'}}>
+              <div style={{display:'flex',gap:'5px',alignItems:'center',flexWrap:'wrap',marginBottom:'5px'}}>
+                <span style={{fontWeight:'900',color:'var(--green)'}}>A</span>
+                <Chip no={c.syaA} size="sm"/><span style={{fontWeight:'700',fontSize:'12px'}}>{c.playerNameA}</span>
+                <span style={{color:'var(--text2)'}}>＋</span>
+                <Chip no={c.syaB} size="sm"/><span style={{fontWeight:'700',fontSize:'12px'}}>{c.playerNameB}</span>
+                <span style={{color:'var(--text2)'}}>→</span>
+                <Chip no={c.linkedPair[0]} size="sm"/><span>+</span><Chip no={c.linkedPair[1]} size="sm"/>
+              </div>
+              <div style={{display:'flex',gap:'10px',flexWrap:'wrap',fontSize:'11px',color:'var(--text2)',padding:'5px 7px',background:'rgba(0,0,0,0.03)',borderRadius:'4px'}}>
+                <span>連動 <strong style={{color:'var(--green)'}}>{c.rate}%</strong>({c.hits}/{c.trials})</span>
+                <span>Wilson下限 <strong>{c.wilsonLower}%</strong></span>
+                <span>base {c.baseRate}% → <strong style={{color:'var(--green)'}}>+{c.improvement}%</strong></span>
+                {c.recent30Rate!=null&&<span>直近30日 <strong>{c.recent30Rate}%</strong> ({c.recent30Hits}/{c.recent30Trials})</span>}
+              </div>
+              <button className="btn btn-sm btn-primary" style={{marginTop:'6px'}} onClick={()=>adoptOne(c)}>採用</button>
+            </div>
+          ))}
+          {results.length>100&&<div className="empty">...他 {results.length-100}件</div>}
+        </div>
+      </>)}
+      {results&&results.length===0&&!running&&(
+        <div className="empty" style={{marginTop:'10px'}}>条件を満たす複合A評価サインがありませんでした</div>
+      )}
+    </div>
+  );
+}
+
 function HighGradeDiscovery({raceResults,players,discoveries,reload}){
   const[running,setRunning]=useState(false);
   const[progress,setProgress]=useState(null);
@@ -4722,6 +4961,7 @@ function ValidationScreen({raceResults,signConditions,discoveries=[],players,rel
 
   return(
     <div>
+      <CompoundADiscovery raceResults={raceResults} players={players} discoveries={discoveries} reload={reload}/>
       <HighGradeDiscovery raceResults={raceResults} players={players} discoveries={discoveries} reload={reload}/>
       <PrecisionReview discoveries={discoveries} raceResults={raceResults} reload={reload}/>
       <div className="card" style={{borderColor:'var(--accent)',borderWidth:'2px'}}>
@@ -5103,7 +5343,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v2.4<br/>
+          競輪サイン予想 v2.5<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -5212,7 +5452,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.4</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.5</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
