@@ -4189,6 +4189,10 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
       const keys=Object.keys(histByKey);
       const candidates=[];
       const minTrials=5;  // 最低試行回数
+      const stats={totalKeys:keys.length,keysProcessed:0,keysSkippedTrialsLow:0,
+        totalPairs:0,pairsZeroHits:0,
+        gradeA:0,gradeB:0,gradeC:0,gradeD:0,
+        topRates:[]};  // 上位の rate を記録
 
       for(let ki=0;ki<keys.length;ki++){
         if(cancelRef.current.cancelled)break;
@@ -4196,12 +4200,14 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
         const [rn,syStr]=key.split('|');
         const sy=Number(syStr);
         const hist=histByKey[key];
-        if(hist.length<minTrials)continue;
+        if(hist.length<minTrials){stats.keysSkippedTrialsLow++;continue;}
+        stats.keysProcessed++;
 
         for(let n1=1;n1<=9;n1++){
           if(n1===sy)continue;
           for(let n2=n1+1;n2<=9;n2++){
             if(n2===sy)continue;
+            stats.totalPairs++;
             let trials=0,hits=0;
             let recent30Trials=0,recent30Hits=0;
             for(const h of hist){
@@ -4213,7 +4219,13 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
                 if(isHit)recent30Hits++;
               }
             }
-            if(hits===0)continue;
+            if(hits===0){stats.pairsZeroHits++;continue;}
+            // 上位rate記録 (10件まで)
+            const rateNow=hits/trials;
+            if(rateNow>=0.7){
+              stats.topRates.push({rate:Math.round(rateNow*1000)/10,trials,hits,key:`${rn}|${sy}→${n1}+${n2}`});
+              if(stats.topRates.length>20)stats.topRates=stats.topRates.sort((a,b)=>b.rate-a.rate).slice(0,10);
+            }
             const rate=hits/trials;
             const wilsonLower=wilsonLowerBound(hits,trials);
             const recent30Rate=recent30Trials>0?recent30Hits/recent30Trials:null;
@@ -4229,6 +4241,12 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
             else if(wilsonLower>=0.5&&(!hasRecent||recentGood))grade='B';  // 中信頼
             else if(wilsonLower>=0.4&&!recentBad)grade='C';  // 弱信頼
             else if(rate>=0.85&&trials>=5&&!recentBad)grade='C';  // 高率だが試行少
+
+            // 全gradeをカウント
+            if(grade==='A')stats.gradeA++;
+            else if(grade==='B')stats.gradeB++;
+            else if(grade==='C')stats.gradeC++;
+            else stats.gradeD++;
 
             if(grade==='D')continue;
             if(gradeFilter==='A'&&grade!=='A')continue;
@@ -4270,7 +4288,14 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
       const aCount=newCandidates.filter(c=>c.grade==='A').length;
       const bCount=newCandidates.filter(c=>c.grade==='B').length;
       const cCount=newCandidates.filter(c=>c.grade==='C').length;
-      setProgress({phase:'done',message:`完了: A${aCount}件 / B${bCount}件 / C${cCount}件 (既採用は除外)`,progress:1});
+      const adoptedCount=candidates.length-newCandidates.length;
+      stats.topRates=stats.topRates.sort((a,b)=>b.rate-a.rate).slice(0,10);
+      console.log('[マイニング詳細]',stats);
+      const detailMsg=`完了: A${aCount}/B${bCount}/C${cCount}件 (既採用${adoptedCount}件除外)\n` +
+        `→ 全gradeカウント: A${stats.gradeA}/B${stats.gradeB}/C${stats.gradeC}/D(除外)${stats.gradeD}\n` +
+        `→ 評価対象 ${stats.keysProcessed.toLocaleString()}キー × ${stats.totalPairs.toLocaleString()}ペア (Hits=0除外 ${stats.pairsZeroHits.toLocaleString()})\n` +
+        (stats.topRates.length>0?`→ 上位rate例: ${stats.topRates.slice(0,3).map(t=>`${t.rate}%(${t.hits}/${t.trials})`).join(', ')}`:'→ 上位rate70%+のペアなし');
+      setProgress({phase:'done',message:detailMsg,progress:1});
     }catch(e){
       alert('エラー: '+e.message);
     }finally{
@@ -4382,7 +4407,7 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
         </button>
       )}
       {progress&&(
-        <div style={{marginTop:'10px',padding:'8px',background:'rgba(58,122,42,0.07)',borderRadius:'5px',fontSize:'11px'}}>
+        <div style={{marginTop:'10px',padding:'8px',background:'rgba(58,122,42,0.07)',borderRadius:'5px',fontSize:'11px',whiteSpace:'pre-line',lineHeight:'1.6'}}>
           {progress.phase==='done'?'✓ ':'⏳ '}{progress.message}
           {progress.progress!=null&&(
             <div style={{height:'4px',background:'var(--bg3)',borderRadius:'2px',marginTop:'4px',overflow:'hidden'}}>
@@ -5076,7 +5101,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v2.2<br/>
+          競輪サイン予想 v2.3<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -5185,7 +5210,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.2</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.3</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
