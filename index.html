@@ -4230,17 +4230,19 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
             const wilsonLower=wilsonLowerBound(hits,trials);
             const recent30Rate=recent30Trials>0?recent30Hits/recent30Trials:null;
 
-            // 評価 (競輪データに合わせた実用的な閾値)
-            // 直近30日があれば直近精度を重視、無ければ全期間+試行数
+            // 評価 (Wilson信頼下限 と rate の両方を考慮)
+            // 競輪は同選手×車番の組合せが少ないので rate基準も併用
             let grade='D';
             const hasRecent=recent30Trials>=2;
             const recentGood=hasRecent&&recent30Rate>=0.7;
             const recentBad=hasRecent&&recent30Rate<0.5;
 
-            if(wilsonLower>=0.65&&!recentBad)grade='A';     // 強信頼
-            else if(wilsonLower>=0.5&&(!hasRecent||recentGood))grade='B';  // 中信頼
-            else if(wilsonLower>=0.4&&!recentBad)grade='C';  // 弱信頼
-            else if(rate>=0.85&&trials>=5&&!recentBad)grade='C';  // 高率だが試行少
+            // A評価: 高精度(rate≥90%×試行5+) または 中精度大量試行(rate≥80%×10+) or Wilson≥65%
+            if(((rate>=0.9&&trials>=5)||(rate>=0.8&&trials>=10)||wilsonLower>=0.65)&&!recentBad)grade='A';
+            // B評価: rate≥80%×5+ or rate≥70%×8+ or Wilson≥50%
+            else if(((rate>=0.8&&trials>=5)||(rate>=0.7&&trials>=8)||wilsonLower>=0.5)&&(!hasRecent||!recentBad))grade='B';
+            // C評価: rate≥70%×5+ or rate≥60%×8+ or Wilson≥40%
+            else if(((rate>=0.7&&trials>=5)||(rate>=0.6&&trials>=8)||wilsonLower>=0.4)&&!recentBad)grade='C';
 
             // 全gradeをカウント
             if(grade==='A')stats.gradeA++;
@@ -4377,10 +4379,10 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
       )}
 
       <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
-        統計的に信頼できる新サインを発見 (競輪データの試行数限界に合わせた閾値):<br/>
-        • <strong>A評価</strong>: ウィルソン信頼下限 ≥65% かつ 直近劣化なし<br/>
-        • <strong>B評価</strong>: ウィルソン信頼下限 ≥50% かつ 直近70%+ (or直近データ少)<br/>
-        • <strong>C評価</strong>: ウィルソン信頼下限 ≥40% or 高率(85%+)で試行5+<br/>
+        実用基準で評価 (rate基準 + Wilson信頼下限):<br/>
+        • <strong>A評価</strong>: 90%×5+回 or 80%×10+回 or Wilson≥65% (直近劣化なし)<br/>
+        • <strong>B評価</strong>: 80%×5+回 or 70%×8+回 or Wilson≥50%<br/>
+        • <strong>C評価</strong>: 70%×5+回 or 60%×8+回 or Wilson≥40%<br/>
         • 既に採用済みのサインは除外
       </p>
       <div style={{display:'flex',gap:'8px',marginBottom:'10px',flexWrap:'wrap'}}>
@@ -5101,7 +5103,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v2.3<br/>
+          競輪サイン予想 v2.4<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -5210,7 +5212,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.3</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.4</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
