@@ -796,6 +796,8 @@ function signKey(s){
   }
   if(type==='COURSE_LINK')return `CL|${reg}|${norm(s.venue)}|${sy}|${normN(s.lookback)||'3'}`;
   if(type==='KYAKU_PATTERN')return `KP|${norm(s.pattern)}|${norm(s.winnerKyaku)}`;
+  if(type==='VENUE_CAR_HABIT')return `VCH|${norm(s.venue)}|${normN(s.racerCount)}|${sy}|${norm(s.side)}`;
+  if(type==='KYAKU_CAR_HABIT')return `KCH|${norm(s.kyaku)}|${normN(s.racerCount)}|${sy}|${norm(s.side)}`;
   return `${type}|${reg}|${sy}`;
 }
 
@@ -1264,6 +1266,18 @@ function getSignMatchHistory(sign, raceResults){
       const b=ents.find(e=>String(e.regNo)===String(sign.regB)&&Number(e.syaban)===Number(sign.syaB));
       const pair=Array.isArray(sign.linkedPair)?sign.linkedPair.map(Number):[];
       if(a&&b&&pair.length===2){isMatch=true;isHit=pair.every(n=>top3.includes(n));}
+    }else if(type==='VENUE_CAR_HABIT'){
+      const rc=ents.filter(e=>e.regNo).length||r.racerCount;
+      if(r.venue===sign.venue&&Number(rc)===Number(sign.racerCount)){
+        const has=ents.some(e=>Number(e.syaban)===Number(sign.syaban));
+        if(has){isMatch=true;const inT=top3.includes(Number(sign.syaban));isHit=sign.side==='kill'?!inT:inT;}
+      }
+    }else if(type==='KYAKU_CAR_HABIT'){
+      const rc=ents.filter(e=>e.regNo).length||r.racerCount;
+      if(Number(rc)===Number(sign.racerCount)){
+        const e=ents.find(e=>Number(e.syaban)===Number(sign.syaban)&&e.kyaku===sign.kyaku);
+        if(e){isMatch=true;const inT=top3.includes(Number(sign.syaban));isHit=sign.side==='kill'?!inT:inT;}
+      }
     }
     if(isMatch)history.push({date:r.date,venue:r.venue,raceNo:r.raceNo,hit:isHit});
   }
@@ -1340,6 +1354,16 @@ function describeSign(s){
   }
   if(type==='KYAKU_PATTERN'){
     return `脚質構成が「${s.pattern}」の時、勝者の脚質は「${s.winnerKyaku}」になりやすい${trials}`;
+  }
+  if(type==='VENUE_CAR_HABIT'){
+    const r=s.rate?` (ルール成立${s.rate}% / ${s.hits||0}/${s.trials||0})`:'';
+    if(s.side==='kill')return `${s.venue} の ${s.racerCount}車立てでは ${s.syaban}番車 は3着以内に入りにくい＝消し${r}`;
+    return `${s.venue} の ${s.racerCount}車立てでは ${s.syaban}番車 が高確率で3着以内＝軸${r}`;
+  }
+  if(type==='KYAKU_CAR_HABIT'){
+    const r=s.rate?` (ルール成立${s.rate}% / ${s.hits||0}/${s.trials||0})`:'';
+    if(s.side==='kill')return `${s.racerCount}車立てで「${s.kyaku}」脚質が ${s.syaban}番車 のとき3着以内に入りにくい＝消し${r}`;
+    return `${s.racerCount}車立てで「${s.kyaku}」脚質が ${s.syaban}番車 のとき高確率で3着以内＝軸${r}`;
   }
   return s.desc||s.description||type||'(定義不明)';
 }
@@ -1536,6 +1560,29 @@ function runAnalysis({entries,raceResults,signConditions,players,discoveries=[],
       syaban:myE.syaban,venue:d.venue,lookback:d.lookback,refRace,refBoats,
       trials:d.trials,rate:d.rate2,desc:d.desc});
     refBoats.forEach(bn=>linkedSet.add(bn));
+  });
+
+  // 自動発見: 場の車番グセ (軸/消し)
+  const todayRC=entries.filter(e=>e.regNo).length;
+  discoveries.filter(d=>d.type==='VENUE_CAR_HABIT'&&d.active!==false).forEach(d=>{
+    if(venue&&d.venue!==venue)return;
+    if(Number(d.racerCount)!==todayRC)return;
+    const e=entries.find(en=>Number(en.syaban)===Number(d.syaban)&&en.regNo);
+    if(!e)return;
+    alerts.push({type:'VENUE_CAR_HABIT',status:d.side==='kill'?'KILL':'AXIS',
+      syaban:Number(d.syaban),side:d.side,venue:d.venue,racerCount:d.racerCount,
+      rate:d.rate,trials:d.trials,desc:describeSign(d)});
+    if(d.side!=='kill')linkedSet.add(Number(d.syaban));
+  });
+  // 自動発見: 脚質の車番グセ (軸/消し)
+  discoveries.filter(d=>d.type==='KYAKU_CAR_HABIT'&&d.active!==false).forEach(d=>{
+    if(Number(d.racerCount)!==todayRC)return;
+    const e=entries.find(en=>Number(en.syaban)===Number(d.syaban)&&en.regNo&&en.kyaku===d.kyaku);
+    if(!e)return;
+    alerts.push({type:'KYAKU_CAR_HABIT',status:d.side==='kill'?'KILL':'AXIS',
+      syaban:Number(d.syaban),side:d.side,kyaku:d.kyaku,racerCount:d.racerCount,
+      rate:d.rate,trials:d.trials,desc:describeSign(d)});
+    if(d.side!=='kill')linkedSet.add(Number(d.syaban));
   });
 
   // 買い目生成
@@ -3011,6 +3058,10 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
             const inTop=refBoats.filter(n=>top3.includes(Number(n))).length;
             connected=inTop>=2;
           }else connected=null;
+        }else if(a.type==='VENUE_CAR_HABIT'||a.type==='KYAKU_CAR_HABIT'){
+          // 軸=その車が3着内 / 消し=その車が3着内に入らなければルール成立
+          const inT=top3.includes(Number(a.syaban));
+          connected=a.side==='kill'?!inT:inT;
         }else{
           // フォールバック: 選手の車番が3着内
           connected=top3.includes(Number(a.syaban));
@@ -3612,6 +3663,18 @@ function buildSignHitMap(allRaces,signsRaw){
             isMatch=true; linkedNums=pair;
             if(hasResult)isHit=pair.every(n=>top3.includes(n));
           }
+        }else if(sign.type==='VENUE_CAR_HABIT'){
+          const rc=ents.filter(e=>e.regNo).length||r.racerCount;
+          if(r.venue===sign.venue&&Number(rc)===Number(sign.racerCount)&&ents.some(e=>Number(e.syaban)===Number(sign.syaban))){
+            isMatch=true; linkedNums=[Number(sign.syaban)];
+            if(hasResult){const inT=top3.includes(Number(sign.syaban));isHit=sign.side==='kill'?!inT:inT;}
+          }
+        }else if(sign.type==='KYAKU_CAR_HABIT'){
+          const rc=ents.filter(e=>e.regNo).length||r.racerCount;
+          if(Number(rc)===Number(sign.racerCount)&&ents.some(e=>Number(e.syaban)===Number(sign.syaban)&&e.kyaku===sign.kyaku)){
+            isMatch=true; linkedNums=[Number(sign.syaban)];
+            if(hasResult){const inT=top3.includes(Number(sign.syaban));isHit=sign.side==='kill'?!inT:inT;}
+          }
         }
 
         if(isMatch){
@@ -4073,7 +4136,134 @@ function AnomalyHunter({raceResults,players,discoveries,reload}){
   const[results,setResults]=useState(null);
   const[minTrials,setMinTrials]=useState(3);
   const[minRate,setMinRate]=useState(100);
+  const[habitRunning,setHabitRunning]=useState(false);
+  const[habitResults,setHabitResults]=useState(null);
+  const[linkAdopting,setLinkAdopting]=useState(false);
   const cancelRef=useRef({cancelled:false});
+
+  // ① 場・脚質の「車番グセ」を抽出 (集計型・高速・全データで頑健)
+  const runHabits=async()=>{
+    setHabitRunning(true); setHabitResults(null);
+    try{
+      const validRaces=dedupRaces(raceResults).filter(r=>r.result1&&r.entries&&r.entries.length>0);
+      const vmap={}; // venue|rc|car
+      const kmap={}; // kyaku|rc|car
+      validRaces.forEach(r=>{
+        const rc=(r.entries||[]).filter(e=>e.regNo).length||r.racerCount;
+        if(!rc)return;
+        const top3=new Set([r.result1,r.result2,r.result3].filter(Boolean).map(Number));
+        (r.entries||[]).forEach(e=>{
+          const c=Number(e.syaban); if(!c)return;
+          const vk=`${r.venue}|${rc}|${c}`;
+          const v=vmap[vk]=vmap[vk]||{h:0,t:0,days:new Set()};
+          v.t++; v.days.add(r.date); if(top3.has(c))v.h++;
+          if(e.kyaku){
+            const kk=`${e.kyaku}|${rc}|${c}`;
+            const k=kmap[kk]=kmap[kk]||{h:0,t:0};
+            k.t++; if(top3.has(c))k.h++;
+          }
+        });
+      });
+      const r1=n=>Math.round(n*1000)/10;
+      const venueHabit=[],kyakuHabit=[];
+      Object.entries(vmap).forEach(([key,v])=>{
+        if(v.t<40||v.days.size<5)return; // 1開催だけの偽物を除外
+        const[venue,rcStr,cStr]=key.split('|');
+        const rc=Number(rcStr),c=Number(cStr),base=3/rc,rate=v.h/v.t,dev=rate-base;
+        if(dev>=0.20)venueHabit.push({type:'VENUE_CAR_HABIT',venue,racerCount:rc,syaban:c,side:'axis',
+          rate:r1(rate),top3rate:r1(rate),trials:v.t,hits:v.h,baseline:r1(base),dev:r1(dev),days:v.days.size,
+          desc:`${venue}の${rc}車立て ${c}番車は3着内 ${r1(rate)}% (${v.h}/${v.t}) 基準${r1(base)}%＝軸`});
+        else if(dev<=-0.20)venueHabit.push({type:'VENUE_CAR_HABIT',venue,racerCount:rc,syaban:c,side:'kill',
+          rate:r1(1-rate),top3rate:r1(rate),trials:v.t,hits:v.t-v.h,baseline:r1(base),dev:r1(dev),days:v.days.size,
+          desc:`${venue}の${rc}車立て ${c}番車は3着内 ${r1(rate)}%しかない (${v.h}/${v.t}) 基準${r1(base)}%＝消し`});
+      });
+      Object.entries(kmap).forEach(([key,v])=>{
+        if(v.t<80)return;
+        const[kyaku,rcStr,cStr]=key.split('|');
+        const rc=Number(rcStr),c=Number(cStr),base=3/rc,rate=v.h/v.t,dev=rate-base;
+        if(dev>=0.18)kyakuHabit.push({type:'KYAKU_CAR_HABIT',kyaku,racerCount:rc,syaban:c,side:'axis',
+          rate:r1(rate),top3rate:r1(rate),trials:v.t,hits:v.h,baseline:r1(base),dev:r1(dev),
+          desc:`${rc}車立て「${kyaku}」が${c}番車→3着内 ${r1(rate)}% (${v.h}/${v.t}) 基準${r1(base)}%＝軸`});
+        else if(dev<=-0.18)kyakuHabit.push({type:'KYAKU_CAR_HABIT',kyaku,racerCount:rc,syaban:c,side:'kill',
+          rate:r1(1-rate),top3rate:r1(rate),trials:v.t,hits:v.t-v.h,baseline:r1(base),dev:r1(dev),
+          desc:`${rc}車立て「${kyaku}」が${c}番車→3着内 ${r1(rate)}%しかない (${v.h}/${v.t}) 基準${r1(base)}%＝消し`});
+      });
+      venueHabit.sort((a,b)=>Math.abs(b.dev)-Math.abs(a.dev));
+      kyakuHabit.sort((a,b)=>Math.abs(b.dev)-Math.abs(a.dev));
+      const adopted=new Set(discoveries.filter(d=>d.active!==false).map(d=>signKey(d)));
+      setHabitResults({
+        venueHabit:venueHabit.filter(c=>!adopted.has(signKey(c))),
+        kyakuHabit:kyakuHabit.filter(c=>!adopted.has(signKey(c))),
+      });
+    }catch(e){alert('エラー: '+e.message);}
+    finally{setHabitRunning(false);}
+  };
+
+  // ② 複数会場(3会場以上)で100%成立する連動サインを一括採用
+  const autoAdoptLinks=async()=>{
+    setLinkAdopting(true);
+    try{
+      const validRaces=dedupRaces(raceResults).filter(r=>r.result1&&r.entries&&r.entries.length>0);
+      const playerMap={};
+      players.forEach(p=>{if(p.regNo)playerMap[String(p.regNo).padStart(6,'0')]=p;});
+      validRaces.forEach(r=>{(r.entries||[]).forEach(e=>{
+        const rn=String(e.regNo||'').padStart(6,'0');
+        if(rn&&!playerMap[rn]&&e.name)playerMap[rn]={regNo:rn,name:e.name};
+      });});
+      const histByKey={};
+      validRaces.forEach(r=>{
+        const top3=new Set([r.result1,r.result2,r.result3].filter(Boolean).map(Number));
+        (r.entries||[]).forEach(e=>{
+          const rn=String(e.regNo||'').padStart(6,'0');
+          const sy=Number(e.syaban);
+          if(!rn||!sy)return;
+          (histByKey[`${rn}|${sy}`]=histByKey[`${rn}|${sy}`]||[]).push({top3,venue:r.venue});
+        });
+      });
+      const found=[],seen=new Set();
+      Object.entries(histByKey).forEach(([key,hist])=>{
+        if(hist.length<5)return;
+        const[rn,syStr]=key.split('|');const sy=Number(syStr);
+        const pName=(playerMap[rn]||{name:'?'}).name;
+        for(let n=1;n<=9;n++){
+          if(n===sy)continue;
+          let hits=0;const venues=new Set();
+          hist.forEach(h=>{if(h.top3.has(n)){hits++;venues.add(h.venue);}});
+          if(hits===hist.length&&hits>=5&&venues.size>=3){
+            const c={type:'PLAYER_SYABAN_LINK',regNo:rn,playerName:pName,syaban:sy,linkedSyaban:n,
+              trials:hist.length,hits,rate:100,venueCount:venues.size,
+              desc:`${pName} が${sy}番のとき → ${n}番が3着以内 100% (${hits}/${hist.length}) [${venues.size}会場]`};
+            const sk=signKey(c);
+            if(!seen.has(sk)){seen.add(sk);found.push(c);}
+          }
+        }
+      });
+      found.sort((a,b)=>b.trials-a.trials||b.venueCount-a.venueCount);
+      const adopted=new Set(discoveries.filter(d=>d.active!==false).map(d=>signKey(d)));
+      const toAdopt=found.filter(c=>!adopted.has(signKey(c)));
+      if(toAdopt.length===0){alert('新たに採用できる「複数会場100%連動」サインはありませんでした');return;}
+      if(!confirm(`複数会場(3会場以上)で100%成立する連動サイン ${toAdopt.length}件 を一括採用しますか?\n\n(同一シリーズ連戦の水増しを除いた本物の連動だけです)`))return;
+      for(const c of toAdopt)await dbPut('discoveries',{...c,active:true,adoptedAt:Date.now()});
+      reload();
+      alert(`✓ ${toAdopt.length}件の連動サインを採用しました`);
+    }catch(e){alert('エラー: '+e.message);}
+    finally{setLinkAdopting(false);}
+  };
+
+  const adoptHabit=async(c)=>{
+    await dbPut('discoveries',{...c,active:true,adoptedAt:Date.now()});
+    reload();
+    setHabitResults(r=>r?{venueHabit:r.venueHabit.filter(x=>signKey(x)!==signKey(c)),kyakuHabit:r.kyakuHabit.filter(x=>signKey(x)!==signKey(c))}:r);
+  };
+  const adoptHabitCategory=async(catKey,label)=>{
+    if(!habitResults||!habitResults[catKey]||habitResults[catKey].length===0)return;
+    const list=habitResults[catKey];
+    if(!confirm(`${label} ${list.length}件 を全て採用しますか?`))return;
+    for(const c of list)await dbPut('discoveries',{...c,active:true,adoptedAt:Date.now()});
+    reload();
+    alert(`${list.length}件採用しました`);
+    setHabitResults(r=>({...r,[catKey]:[]}));
+  };
 
   const runHunt=async()=>{
     setRunning(true); setResults(null); setProgress(null);
@@ -4350,9 +4540,62 @@ function AnomalyHunter({raceResults,players,discoveries,reload}){
     );
   };
 
+  const renderHabit=(catKey,label,emoji)=>{
+    const list=habitResults&&habitResults[catKey];
+    if(!list||list.length===0)return null;
+    const axis=list.filter(c=>c.side==='axis'), kill=list.filter(c=>c.side==='kill');
+    return(
+      <div style={{marginTop:'12px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'6px'}}>
+          <span style={{fontWeight:'700',fontSize:'13px'}}>{emoji} {label} (軸{axis.length}/消し{kill.length})</span>
+          <button className="btn btn-sm btn-success" style={{marginLeft:'auto'}} onClick={()=>adoptHabitCategory(catKey,label)}>全て採用</button>
+        </div>
+        <div style={{maxHeight:'320px',overflowY:'auto'}}>
+          {list.slice(0,60).map((c,i)=>(
+            <div key={i} className="hist-item" style={{borderColor:c.side==='kill'?'var(--text2)':'var(--green)',borderWidth:'1px'}}>
+              <div style={{fontSize:'12px',marginBottom:'4px'}}>
+                <span style={{display:'inline-block',fontWeight:'700',fontSize:'10px',padding:'1px 6px',borderRadius:'3px',marginRight:'6px',
+                  background:c.side==='kill'?'#e8e8e8':'#ffe5e5',color:c.side==='kill'?'#333':'#bb1100'}}>{c.side==='kill'?'消し':'軸'}</span>
+                {c.desc}
+              </div>
+              <div style={{display:'flex',gap:'8px',fontSize:'11px',color:'var(--text2)'}}>
+                <strong style={{color:c.dev>=0?'var(--green)':'var(--red)'}}>基準比 {c.dev>=0?'+':''}{c.dev}pt</strong>
+                <span>試行 {c.trials}回{c.days?` / ${c.days}日`:''}</span>
+              </div>
+              <button className="btn btn-sm btn-primary" style={{marginTop:'5px'}} onClick={()=>adoptHabit(c)}>採用</button>
+            </div>
+          ))}
+          {list.length>60&&<div className="empty">...他 {list.length-60}件 (上位60件のみ表示)</div>}
+        </div>
+      </div>
+    );
+  };
+
   return(
     <div className="card" style={{borderColor:'var(--red)',borderWidth:'2px'}}>
       <div className="card-title" style={{color:'var(--red)'}}>🎯 異常パターンハンター</div>
+      {/* === 場・脚質の車番グセ + 連動一括採用 (頑健・高速) === */}
+      <div style={{padding:'10px',background:'rgba(0,150,80,0.06)',border:'1px solid var(--green)',borderRadius:'6px',marginBottom:'12px'}}>
+        <div style={{fontWeight:'700',fontSize:'13px',marginBottom:'6px',color:'var(--green)'}}>🏟️ 場・脚質の「車番グセ」＋ 連動サイン一括採用</div>
+        <p style={{fontSize:'11px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'8px'}}>
+          試行数の多い<strong>頑健な異常値</strong>。「この競輪場のこの車番は軸/消し」「この脚質がこの車番だと軸/消し」を全データから抽出。<br/>
+          連動一括採用は<strong>3会場以上で100%</strong>成立する選手連動だけ＝同一シリーズ連戦の水増しを除いた本物のみ。
+        </p>
+        <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+          <button className="btn btn-sm btn-primary" disabled={habitRunning} onClick={runHabits} style={{flex:'1 1 45%',background:'var(--green)'}}>
+            {habitRunning?'⏳ 抽出中...':'🏟️ 場・脚質のクセを抽出'}
+          </button>
+          <button className="btn btn-sm btn-primary" disabled={linkAdopting} onClick={autoAdoptLinks} style={{flex:'1 1 45%'}}>
+            {linkAdopting?'⏳ 採用中...':'🔗 複数会場100%連動を一括採用'}
+          </button>
+        </div>
+        {habitResults&&(<>
+          {renderHabit('venueHabit','競輪場の車番グセ','🏟️')}
+          {renderHabit('kyakuHabit','脚質×車番グセ','🦵')}
+          {(habitResults.venueHabit.length===0&&habitResults.kyakuHabit.length===0)&&
+            <div className="empty" style={{marginTop:'8px'}}>新規の異常クセはありませんでした (採用済みは除外)</div>}
+        </>)}
+      </div>
       <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
         統計学を無視して「<strong>なんでこの条件でこれが起きるんだ!?</strong>」という異常事象を探す:<br/>
         • <strong>単独連動</strong>: 選手×車番 → ある車番が3着内<br/>
@@ -5694,7 +5937,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v2.7<br/>
+          競輪サイン予想 v2.8<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -5803,7 +6046,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.7</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.8</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
