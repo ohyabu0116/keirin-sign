@@ -4114,6 +4114,9 @@ function CompoundADiscovery({raceResults,players,discoveries,reload}){
 
       const candidates=[];
       const seen=new Set();
+      const stats={basesProcessed:0,basesSkippedRate:0,
+        pairsTotal:0,pairsScanned:0,
+        companionsTotal:0,companionsLowTrials:0,companionsNotA:0,companionsNotImproved:0};
 
       for(let ki=0;ki<keys.length;ki++){
         if(cancelRef.current.cancelled)break;
@@ -4121,50 +4124,51 @@ function CompoundADiscovery({raceResults,players,discoveries,reload}){
         const [rn1,sy1Str]=key1.split('|');
         const sy1=Number(sy1Str);
         const hist1=histByKey[key1];
+        stats.basesProcessed++;
 
         // 各 (n1, n2) を仮定
         for(let n1=1;n1<=9;n1++){
           if(n1===sy1)continue;
           for(let n2=n1+1;n2<=9;n2++){
             if(n2===sy1)continue;
+            stats.pairsTotal++;
 
             // base のhit/trial
             let baseHits=0;
             hist1.forEach(h=>{if(h.top3.has(n1)&&h.top3.has(n2))baseHits++;});
             const baseRate=hist1.length>0?baseHits/hist1.length:0;
-            // 既に強い(>=85%)場合は単独でも検出可能なのでスキップ
-            // 弱すぎる(<40%)場合は複合しても上がりにくいのでスキップ
-            if(baseRate>=0.85||baseRate<0.4)continue;
+            // 既にA評価レベルの場合スキップ (rate>=90%) / 弱すぎ(<20%)もスキップ
+            if(baseRate>=0.9||baseRate<0.2){stats.basesSkippedRate++;continue;}
+            stats.pairsScanned++;
 
             // 同レース内の各 (regNo2, syaban2) を companion として試す
-            const companionMap={};  // k2 -> {trials, hits, recent30Trials, recent30Hits}
+            const companionMap={};
             for(const h of hist1){
               for(const k2 of h.entryKeys){
                 if(k2===key1)continue;
                 const isHit=h.top3.has(n1)&&h.top3.has(n2);
-                const m=companionMap[k2]=companionMap[k2]||{trials:0,hits:0,recent30T:0,recent30H:0,dates:[]};
+                const m=companionMap[k2]=companionMap[k2]||{trials:0,hits:0,recent30T:0,recent30H:0};
                 m.trials++;
                 if(isHit)m.hits++;
                 if(h.date>=_30daysAgo){m.recent30T++;if(isHit)m.recent30H++;}
-                m.dates.push(h.date);
               }
             }
 
-            // companionを評価
+            // companionを評価 (緩和版)
             for(const k2 in companionMap){
               const m=companionMap[k2];
-              // 試行5回以上で companion 評価
-              if(m.trials<5)continue;
+              stats.companionsTotal++;
+              if(m.trials<3){stats.companionsLowTrials++;continue;}  // 3回以上
               const compRate=m.hits/m.trials;
               const compWilson=wilsonLowerBound(m.hits,m.trials);
               const recent30Rate=m.recent30T>0?m.recent30H/m.recent30T:null;
               const recentBad=m.recent30T>=2&&recent30Rate<0.5;
 
-              // A評価判定 (実用基準)
-              const isA=((compRate>=0.9&&m.trials>=5)||(compRate>=0.8&&m.trials>=10)||compWilson>=0.65)&&!recentBad;
-              if(!isA)continue;
-              // 改善幅: baseRate より明確に高い必要
-              if(compRate<baseRate+0.15)continue;
+              // A評価判定 (緩和: rate>=80%×3+ or rate>=70%×5+ or Wilson>=55%)
+              const isA=((compRate>=0.8&&m.trials>=3)||(compRate>=0.7&&m.trials>=5)||compWilson>=0.55)&&!recentBad;
+              if(!isA){stats.companionsNotA++;continue;}
+              // 改善幅: baseRate より明確に高い必要 (10%緩和)
+              if(compRate<baseRate+0.1){stats.companionsNotImproved++;continue;}
 
               const [rn2,sy2Str]=k2.split('|');
               const sy2=Number(sy2Str);
@@ -4206,7 +4210,11 @@ function CompoundADiscovery({raceResults,players,discoveries,reload}){
       newCandidates.sort((a,b)=>b.rate-a.rate||b.trials-a.trials);
 
       setResults(newCandidates);
-      setProgress({phase:'done',message:`完了: ${newCandidates.length}件のA評価複合条件 (既採用${candidates.length-newCandidates.length}件除外)`,progress:1});
+      console.log('[複合A詳細]',stats);
+      const detailMsg=`完了: ${newCandidates.length}件 (既採用${candidates.length-newCandidates.length}件除外)\n`+
+        `→ ベース${stats.basesProcessed.toLocaleString()}キー / ペア${stats.pairsScanned.toLocaleString()}/${stats.pairsTotal.toLocaleString()} (rate範囲外スキップ${stats.basesSkippedRate.toLocaleString()})\n`+
+        `→ companion検査${stats.companionsTotal.toLocaleString()}件 (試行少${stats.companionsLowTrials.toLocaleString()}/A未到達${stats.companionsNotA.toLocaleString()}/改善不足${stats.companionsNotImproved.toLocaleString()})`;
+      setProgress({phase:'done',message:detailMsg,progress:1});
     }catch(e){
       alert('エラー: '+e.message);
     }finally{
@@ -4248,9 +4256,9 @@ function CompoundADiscovery({raceResults,players,discoveries,reload}){
       <div className="card-title" style={{color:'var(--blue)'}}>🔬 複合条件 A評価マイニング</div>
       <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
         単独サインだとA評価が出にくいなら<strong>条件を追加してA評価を満たす複合ルール</strong>を探索:<br/>
-        • ベース「選手A が ○番」を、companion「+選手B が □番」で絞る<br/>
-        • 絞った結果 90%×5回以上 (A評価) なら採用候補に<br/>
-        • baseより15%以上改善している組合せだけ<br/>
+        • ベース「選手A が ○番」(rate 20-90%) を、companion「+選手B が □番」で絞る<br/>
+        • 絞った結果 80%×3回以上 or 70%×5回以上 (A評価) なら採用候補に<br/>
+        • baseより10%以上改善している組合せだけ<br/>
         • 既採用は除外
       </p>
       {!running?
@@ -4262,7 +4270,7 @@ function CompoundADiscovery({raceResults,players,discoveries,reload}){
         </button>
       }
       {progress&&(
-        <div style={{marginTop:'10px',padding:'8px',background:'rgba(26,85,136,0.07)',borderRadius:'5px',fontSize:'11px'}}>
+        <div style={{marginTop:'10px',padding:'8px',background:'rgba(26,85,136,0.07)',borderRadius:'5px',fontSize:'11px',whiteSpace:'pre-line',lineHeight:'1.6'}}>
           {progress.phase==='done'?'✓ ':'⏳ '}{progress.message}
           {progress.progress!=null&&(
             <div style={{height:'4px',background:'var(--bg3)',borderRadius:'2px',marginTop:'4px',overflow:'hidden'}}>
@@ -5343,7 +5351,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v2.5<br/>
+          競輪サイン予想 v2.6<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -5452,7 +5460,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.5</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.6</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
