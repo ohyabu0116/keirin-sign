@@ -4076,9 +4076,34 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
   const[repairProgress,setRepairProgress]=useState(null);
   const cancelRef=useRef({cancelled:false});
 
-  const dedupedAll=useMemo(()=>dedupRaces(raceResults),[raceResults]);
-  const missingEntries=useMemo(()=>dedupedAll.filter(r=>r.result1&&(!r.entries||r.entries.length===0)).length,[dedupedAll]);
-  const validCount=useMemo(()=>dedupedAll.filter(r=>r.result1&&r.entries&&r.entries.length>0).length,[dedupedAll]);
+  const dataStats=useMemo(()=>{
+    const total=raceResults.length;
+    const dedupedAll=dedupRaces(raceResults);
+    const afterDedup=dedupedAll.length;
+    const withResult=dedupedAll.filter(r=>r.result1).length;
+    const withEntries=dedupedAll.filter(r=>r.entries&&r.entries.length>0).length;
+    const valid=dedupedAll.filter(r=>r.result1&&r.entries&&r.entries.length>0).length;
+    const missingEntries=dedupedAll.filter(r=>r.result1&&(!r.entries||r.entries.length===0)).length;
+    const noResult=dedupedAll.filter(r=>!r.result1).length;
+    // (regNo, syaban) のユニーク数を計算
+    const keySet=new Set();
+    const keyTrials={};
+    dedupedAll.forEach(r=>{
+      if(!r.result1||!r.entries)return;
+      r.entries.forEach(e=>{
+        const k=`${String(e.regNo||'').padStart(6,'0')}|${e.syaban}`;
+        if(e.regNo&&e.syaban){keySet.add(k);keyTrials[k]=(keyTrials[k]||0)+1;}
+      });
+    });
+    const totalKeys=keySet.size;
+    const keysWith5=Object.values(keyTrials).filter(n=>n>=5).length;
+    const keysWith10=Object.values(keyTrials).filter(n=>n>=10).length;
+    const keysWith20=Object.values(keyTrials).filter(n=>n>=20).length;
+    return {total,afterDedup,withResult,withEntries,valid,missingEntries,noResult,
+      totalKeys,keysWith5,keysWith10,keysWith20};
+  },[raceResults]);
+  const missingEntries=dataStats.missingEntries;
+  const validCount=dataStats.valid;
 
   const runRepair=async()=>{
     setRepairing(true);
@@ -4287,6 +4312,23 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
   return(
     <div className="card" style={{borderColor:'var(--green)',borderWidth:'2px'}}>
       <div className="card-title" style={{color:'var(--green)'}}>🏆 A/B評価サイン発見マイニング</div>
+
+      {/* データ統計サマリー (常時表示) */}
+      <div style={{padding:'10px',background:'var(--bg3)',borderRadius:'6px',marginBottom:'10px',fontSize:'11px',lineHeight:'1.7'}}>
+        <div style={{fontWeight:'700',marginBottom:'4px'}}>📊 マイニング対象データ</div>
+        <div>総レース: <strong>{dataStats.total.toLocaleString()}</strong>件 → 重複除去後 <strong>{dataStats.afterDedup.toLocaleString()}</strong>件</div>
+        <div>
+          結果あり <strong style={{color:dataStats.withResult===dataStats.afterDedup?'var(--green)':'var(--yellow)'}}>{dataStats.withResult.toLocaleString()}</strong>件
+          / 出走表あり <strong style={{color:dataStats.withEntries===dataStats.afterDedup?'var(--green)':'var(--yellow)'}}>{dataStats.withEntries.toLocaleString()}</strong>件
+          → 両方ある <strong style={{color:'var(--green)'}}>{dataStats.valid.toLocaleString()}</strong>件 (有効)
+        </div>
+        <div style={{marginTop:'4px',color:'var(--text2)'}}>
+          選手×車番 ユニーク組合せ: <strong>{dataStats.totalKeys.toLocaleString()}</strong>パターン<br/>
+          試行5+: <strong style={{color:'var(--accent)'}}>{dataStats.keysWith5.toLocaleString()}</strong> /
+          10+: <strong>{dataStats.keysWith10.toLocaleString()}</strong> /
+          20+: <strong>{dataStats.keysWith20.toLocaleString()}</strong>
+        </div>
+      </div>
 
       {missingEntries>0&&(
         <div style={{padding:'10px 12px',marginBottom:'10px',background:'rgba(187,34,0,0.07)',border:'1px solid var(--red)',borderRadius:'6px'}}>
@@ -5034,7 +5076,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v2.1<br/>
+          競輪サイン予想 v2.2<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -5143,7 +5185,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.1</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.2</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
