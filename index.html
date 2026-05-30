@@ -4047,13 +4047,21 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
             const wilsonLower=wilsonLowerBound(hits,trials);
             const recent30Rate=recent30Trials>0?recent30Hits/recent30Trials:null;
 
-            // 評価
-            let grade='C';
-            if(wilsonLower>=0.7&&(recent30Trials<3||recent30Rate>=0.7))grade='A';
-            else if(wilsonLower>=0.6||(recent30Trials>=3&&recent30Rate>=0.7))grade='B';
+            // 評価 (競輪データに合わせた実用的な閾値)
+            // 直近30日があれば直近精度を重視、無ければ全期間+試行数
+            let grade='D';
+            const hasRecent=recent30Trials>=2;
+            const recentGood=hasRecent&&recent30Rate>=0.7;
+            const recentBad=hasRecent&&recent30Rate<0.5;
 
-            if(grade==='C')continue;
+            if(wilsonLower>=0.65&&!recentBad)grade='A';     // 強信頼
+            else if(wilsonLower>=0.5&&(!hasRecent||recentGood))grade='B';  // 中信頼
+            else if(wilsonLower>=0.4&&!recentBad)grade='C';  // 弱信頼
+            else if(rate>=0.85&&trials>=5&&!recentBad)grade='C';  // 高率だが試行少
+
+            if(grade==='D')continue;
             if(gradeFilter==='A'&&grade!=='A')continue;
+            if(gradeFilter==='AB'&&grade==='C')continue;
 
             const p=playerMap[rn];
             candidates.push({
@@ -4080,14 +4088,18 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
       const adopted=new Set(discoveries.filter(d=>d.active!==false).map(d=>signKey(d)));
       const newCandidates=candidates.filter(c=>!adopted.has(signKey(c)));
 
-      // ソート: A > B、各内で wilsonLower 降順
+      // ソート: A > B > C、各内で wilsonLower 降順
+      const gradeOrder={A:0,B:1,C:2,D:3};
       newCandidates.sort((a,b)=>{
-        if(a.grade!==b.grade)return a.grade==='A'?-1:1;
+        if(a.grade!==b.grade)return gradeOrder[a.grade]-gradeOrder[b.grade];
         return b.wilsonLower-a.wilsonLower;
       });
 
       setResults(newCandidates);
-      setProgress({phase:'done',message:`完了: A${newCandidates.filter(c=>c.grade==='A').length}件 / B${newCandidates.filter(c=>c.grade==='B').length}件 (既採用は除外)`,progress:1});
+      const aCount=newCandidates.filter(c=>c.grade==='A').length;
+      const bCount=newCandidates.filter(c=>c.grade==='B').length;
+      const cCount=newCandidates.filter(c=>c.grade==='C').length;
+      setProgress({phase:'done',message:`完了: A${aCount}件 / B${bCount}件 / C${cCount}件 (既採用は除外)`,progress:1});
     }catch(e){
       alert('エラー: '+e.message);
     }finally{
@@ -4130,9 +4142,10 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
     <div className="card" style={{borderColor:'var(--green)',borderWidth:'2px'}}>
       <div className="card-title" style={{color:'var(--green)'}}>🏆 A/B評価サイン発見マイニング</div>
       <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
-        統計的に信頼できる新サインだけを発見:<br/>
-        • <strong>ウィルソン信頼下限 ≥70%</strong> (試行回数を加味)<br/>
-        • <strong>直近30日連動率 ≥70%</strong> (劣化していない)<br/>
+        統計的に信頼できる新サインを発見 (競輪データの試行数限界に合わせた閾値):<br/>
+        • <strong>A評価</strong>: ウィルソン信頼下限 ≥65% かつ 直近劣化なし<br/>
+        • <strong>B評価</strong>: ウィルソン信頼下限 ≥50% かつ 直近70%+ (or直近データ少)<br/>
+        • <strong>C評価</strong>: ウィルソン信頼下限 ≥40% or 高率(85%+)で試行5+<br/>
         • 既に採用済みのサインは除外
       </p>
       <div style={{display:'flex',gap:'8px',marginBottom:'10px',flexWrap:'wrap'}}>
@@ -4143,6 +4156,10 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
         <label style={{display:'flex',alignItems:'center',gap:'5px',cursor:'pointer'}}>
           <input type="radio" name="gf" checked={gradeFilter==='A'} onChange={()=>setGradeFilter('A')}/>
           <span style={{fontSize:'12px'}}>A評価のみ</span>
+        </label>
+        <label style={{display:'flex',alignItems:'center',gap:'5px',cursor:'pointer'}}>
+          <input type="radio" name="gf" checked={gradeFilter==='ABC'} onChange={()=>setGradeFilter('ABC')}/>
+          <span style={{fontSize:'12px'}}>全評価 (A+B+C)</span>
         </label>
       </div>
       {!running?(
@@ -4171,11 +4188,12 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
             <span style={{fontWeight:'700'}}>結果 {results.length}件</span>
             <span style={{color:'var(--green)',fontSize:'12px'}}>A {results.filter(c=>c.grade==='A').length}件</span>
             <span style={{color:'var(--yellow)',fontSize:'12px'}}>B {results.filter(c=>c.grade==='B').length}件</span>
+            <span style={{color:'var(--accent)',fontSize:'12px'}}>C {results.filter(c=>c.grade==='C').length}件</span>
             {results.filter(c=>c.grade==='A').length>0&&<button className="btn btn-sm btn-success" style={{marginLeft:'auto'}} onClick={adoptAllA}>A評価を全て採用</button>}
           </div>
           <div style={{maxHeight:'600px',overflowY:'auto'}}>
             {results.slice(0,100).map((c,i)=>{
-              const color=c.grade==='A'?'var(--green)':'var(--yellow)';
+              const color=c.grade==='A'?'var(--green)':c.grade==='B'?'var(--yellow)':'var(--accent)';
               return(
                 <div key={i} className="hist-item" style={{borderColor:color,borderWidth:'1px'}}>
                   <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap',marginBottom:'5px'}}>
@@ -4851,7 +4869,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v1.7<br/>
+          競輪サイン予想 v1.8<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -4970,7 +4988,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.7</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v1.8</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
