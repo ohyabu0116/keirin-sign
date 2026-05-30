@@ -680,6 +680,61 @@ function permutations(arr,r){
 /* ====================================================================
    クライアントサイド マイニング (サーバーなしでも動作)
 ==================================================================== */
+/* 出走表データが欠けているレースを再取得して補完 */
+async function repairMissingEntries(onProgress){
+  const races=await dbAll('raceResults');
+  // 結果あり + 出走表なし のレースを抽出
+  const targets=races.filter(r=>r.result1&&(!r.entries||r.entries.length===0));
+  if(targets.length===0)return {repaired:0,failed:0,skipped:0};
+
+  // (date, venue) ごとにグルーピング (同会場・同日は1回のAPI呼出で全レース取得)
+  const groups={};
+  targets.forEach(r=>{
+    const k=`${r.date}|${r.venue}`;
+    (groups[k]=groups[k]||[]).push(r);
+  });
+  const groupKeys=Object.keys(groups);
+
+  let repaired=0,failed=0,doneGroups=0;
+  for(const gk of groupKeys){
+    const [date,venue]=gk.split('|');
+    const racesInGroup=groups[gk];
+    try{
+      // 会場情報取得 → JSJ017で全レースの出走表を一括取得
+      const venues=await clientFetchVenues(date);
+      const v=venues.find(x=>x.name===venue);
+      if(!v||!v.encPrm){failed+=racesInGroup.length;doneGroups++;continue;}
+      const j=await _proxyFetch({type:'JSJ017',encp:v.encPrm});
+      const entriesMap={};
+      (j.rInfo||[]).forEach(r=>{
+        entriesMap[Number(r.raceNo)]=(r.sInfo||[]).map(s=>({
+          syaban:Number(s.syaban),
+          regNo:String(s.senNo||'').padStart(6,'0'),
+          name:(s.senName||'').replace('　',' ').trim(),
+          prefecture:(s.huken||'').replace(/　/g,'').trim(),
+          kyaku:s.kyaku||'',
+          note:s.assen||'',
+        }));
+      });
+      for(const race of racesInGroup){
+        const ents=entriesMap[race.raceNo];
+        if(ents&&ents.length>0){
+          await dbPut('raceResults',{...race,entries:ents,racerCount:ents.length});
+          repaired++;
+        }else{
+          failed++;
+        }
+      }
+    }catch(e){
+      console.warn(`repair ${gk} failed:`,e);
+      failed+=racesInGroup.length;
+    }
+    doneGroups++;
+    if(onProgress)onProgress(doneGroups,groupKeys.length,repaired,failed);
+  }
+  return {repaired,failed,total:targets.length};
+}
+
 /* 高速一括削除 (IndexedDB単一トランザクションでN件削除) */
 async function bulkDeleteRaces(idsToDelete,onProgress){
   if(!idsToDelete||idsToDelete.length===0)return;
@@ -4017,7 +4072,29 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
   const[progress,setProgress]=useState(null);
   const[results,setResults]=useState(null);
   const[gradeFilter,setGradeFilter]=useState('AB');  // 'A' or 'AB'
+  const[repairing,setRepairing]=useState(false);
+  const[repairProgress,setRepairProgress]=useState(null);
   const cancelRef=useRef({cancelled:false});
+
+  const dedupedAll=useMemo(()=>dedupRaces(raceResults),[raceResults]);
+  const missingEntries=useMemo(()=>dedupedAll.filter(r=>r.result1&&(!r.entries||r.entries.length===0)).length,[dedupedAll]);
+  const validCount=useMemo(()=>dedupedAll.filter(r=>r.result1&&r.entries&&r.entries.length>0).length,[dedupedAll]);
+
+  const runRepair=async()=>{
+    setRepairing(true);
+    try{
+      const result=await repairMissingEntries((done,total,rep,fail)=>{
+        setRepairProgress({done,total,rep,fail,message:`${done}/${total}会場/日 処理中... 補完${rep}/失敗${fail}`});
+      });
+      alert(`✓ 出走表データを再取得しました\n補完: ${result.repaired}件\n失敗: ${result.failed}件 (取得不可)`);
+      await reload();
+    }catch(e){
+      alert('再取得失敗: '+e.message);
+    }finally{
+      setRepairing(false);
+      setRepairProgress(null);
+    }
+  };
 
   const runMining=async()=>{
     setRunning(true); setResults(null); setProgress(null);
@@ -4210,6 +4287,28 @@ function HighGradeDiscovery({raceResults,players,discoveries,reload}){
   return(
     <div className="card" style={{borderColor:'var(--green)',borderWidth:'2px'}}>
       <div className="card-title" style={{color:'var(--green)'}}>🏆 A/B評価サイン発見マイニング</div>
+
+      {missingEntries>0&&(
+        <div style={{padding:'10px 12px',marginBottom:'10px',background:'rgba(187,34,0,0.07)',border:'1px solid var(--red)',borderRadius:'6px'}}>
+          <div style={{fontSize:'12px',fontWeight:'700',color:'var(--red)',marginBottom:'4px'}}>
+            ⚠️ 出走表データが欠けているレース {missingEntries.toLocaleString()}件
+          </div>
+          <div style={{fontSize:'11px',color:'var(--text2)',marginBottom:'8px'}}>
+            結果はあるが出走表データ(選手↔車番)が欠落しています。これらはマイニングに使えません。<br/>
+            有効レース: {validCount.toLocaleString()}件 (全{dedupedAll.length.toLocaleString()}件中)
+          </div>
+          {!repairing?
+            <button className="btn btn-sm btn-danger" onClick={runRepair}>🔧 KEIRIN.JPから出走表を再取得</button>:
+            <div style={{fontSize:'11px'}}>
+              ⏳ {repairProgress?.message||'再取得中...'}
+              <div style={{height:'4px',background:'var(--bg3)',borderRadius:'2px',marginTop:'4px',overflow:'hidden'}}>
+                <div style={{height:'100%',width:`${repairProgress?(repairProgress.done/repairProgress.total*100):0}%`,background:'var(--red)',transition:'width 0.3s'}}/>
+              </div>
+            </div>
+          }
+        </div>
+      )}
+
       <p style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.6',marginBottom:'10px'}}>
         統計的に信頼できる新サインを発見 (競輪データの試行数限界に合わせた閾値):<br/>
         • <strong>A評価</strong>: ウィルソン信頼下限 ≥65% かつ 直近劣化なし<br/>
@@ -4935,7 +5034,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v2.0<br/>
+          競輪サイン予想 v2.1<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -5044,7 +5143,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.0</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.1</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
