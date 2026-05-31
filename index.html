@@ -134,6 +134,78 @@ input,select,textarea{touch-action:auto}
 const{useState,useEffect,useMemo,useRef,useCallback}=React;
 
 /* ====================================================================
+   🔮 オカルト・サイン (オフライン採掘 v3.0) — データ & マッチャー
+   List A: この複合条件が揃うと荒れ(3連単>=30000円/300倍)やすい
+   List B: 選手アンカー連動 (この選手が定位置→特定2車が3着以内)
+   共通項: 荒れレースの構造的フィンガープリント
+==================================================================== */
+const OCCULT_BASE_RATE=0.102;
+const OCCULT_ROUGH_SIGNS=[
+  {"id":"A1","desc":"『介』@9番 & 脚質追@8番","preds":[{"t":"name_kanji","kanji":"介","syaban":9},{"t":"kyaku","kyaku":"追","syaban":8}],"support":23,"r30":7,"rate":0.304,"lift":3.0,"oos":[0.364,0.25],"meanTp":48317},
+  {"id":"A2","desc":"徳島@8番 & 脚質追@9番","preds":[{"t":"pref","pref":"徳島","syaban":8},{"t":"kyaku","kyaku":"追","syaban":9}],"support":24,"r30":7,"rate":0.292,"lift":2.87,"oos":[0.455,0.154],"meanTp":72709},
+  {"id":"A3","desc":"『松』@9番 & 脚質追@8番","preds":[{"t":"name_kanji","kanji":"松","syaban":9},{"t":"kyaku","kyaku":"追","syaban":8}],"support":24,"r30":7,"rate":0.292,"lift":2.87,"oos":[0.5,0.188],"meanTp":68500},
+  {"id":"A4","desc":"『村』@9番 & 脚質追@8番","preds":[{"t":"name_kanji","kanji":"村","syaban":9},{"t":"kyaku","kyaku":"追","syaban":8}],"support":24,"r30":7,"rate":0.292,"lift":2.87,"oos":[0.143,0.5],"meanTp":106334},
+  {"id":"A5","desc":"『也』@8番 & 脚質逃@9番","preds":[{"t":"name_kanji","kanji":"也","syaban":8},{"t":"kyaku","kyaku":"逃","syaban":9}],"support":28,"r30":8,"rate":0.286,"lift":2.81,"oos":[0.25,0.333],"meanTp":98302},
+  {"id":"A6","desc":"『成』@8番 & 脚質追@9番","preds":[{"t":"name_kanji","kanji":"成","syaban":8},{"t":"kyaku","kyaku":"追","syaban":9}],"support":22,"r30":6,"rate":0.273,"lift":2.69,"oos":[0.125,0.357],"meanTp":117175},
+  {"id":"A7","desc":"長島大介出走 & 12R","preds":[{"t":"racer_present","name":"長島大介"},{"t":"rno","rno":12}],"support":23,"r30":6,"rate":0.261,"lift":2.57,"oos":[0.273,0.25],"meanTp":78745},
+  {"id":"A8","desc":"『原』@9番 & 脚質逃@8番","preds":[{"t":"name_kanji","kanji":"原","syaban":9},{"t":"kyaku","kyaku":"逃","syaban":8}],"support":24,"r30":6,"rate":0.25,"lift":2.46,"oos":[0.143,0.4],"meanTp":150948},
+  {"id":"A9","desc":"小川勇介出走 & 12R","preds":[{"t":"racer_present","name":"小川勇介"},{"t":"rno","rno":12}],"support":22,"r30":5,"rate":0.227,"lift":2.24,"oos":[0.231,0.222],"meanTp":45162},
+  {"id":"A10","desc":"深谷知広出走 & 12R","preds":[{"t":"racer_present","name":"深谷知広"},{"t":"rno","rno":12}],"support":28,"r30":6,"rate":0.214,"lift":2.11,"oos":[0.143,0.286],"meanTp":58630},
+  {"id":"A11","desc":"埼玉@8番 & 脚質追@9番","preds":[{"t":"pref","pref":"埼玉","syaban":8},{"t":"kyaku","kyaku":"追","syaban":9}],"support":24,"r30":5,"rate":0.208,"lift":2.05,"oos":[0.154,0.273],"meanTp":158674},
+  {"id":"A12","desc":"『小』@9番 & 脚質追@8番","preds":[{"t":"name_kanji","kanji":"小","syaban":9},{"t":"kyaku","kyaku":"追","syaban":8}],"support":24,"r30":5,"rate":0.208,"lift":2.05,"oos":[0.182,0.231],"meanTp":74606},
+];
+const RIDER_LINK_SIGNS=[
+  {"id":"B1","name":"梅川風子","anchorSyaban":1,"pair":[1,2],"support":23,"hits":19,"rate":0.826,"oos":[0.667,0.929],"meanTp":3731,"areRate":0.043,"desc":"梅川風子が1番 → 1-2号車が連動"},
+  {"id":"B2","name":"片山直人","anchorSyaban":7,"pair":[1,2],"support":16,"hits":10,"rate":0.625,"oos":[0.545,0.8],"meanTp":6610,"areRate":0.0,"desc":"片山直人が7番 → 1-2号車が連動"},
+  {"id":"B3","name":"小林莉子","anchorSyaban":1,"pair":[1,2],"support":18,"hits":11,"rate":0.611,"oos":[0.6,0.615],"meanTp":5782,"areRate":0.111,"desc":"小林莉子が1番 → 1-2号車が連動"},
+];
+const ROUGH_COMMON_FACTORS={"raise":[{"cat":"脚質構成","val":"逃4・両2・追3 (9車のバラけ)","lift":3.0,"rate":0.304,"sup":69},{"cat":"級別","val":"G1 (大舞台)","lift":2.77,"rate":0.281,"sup":96},{"cat":"脚質構成","val":"逃3・両3・追3 (9車の完全分散)","lift":2.63,"rate":0.267,"sup":86},{"cat":"外枠始動","val":"追脚が9番","lift":2.2,"rate":0.223,"sup":439},{"cat":"外枠始動","val":"逃脚が8番","lift":2.17,"rate":0.221,"sup":394},{"cat":"車立","val":"9車立 (多頭数)","lift":2.11,"rate":0.214,"sup":1077},{"cat":"府県×枠","val":"埼玉が8番","lift":2.66,"rate":0.27,"sup":63}],"clean":[{"cat":"車立","val":"5車立 (少頭数)","lift":0.0,"rate":0.0,"sup":110},{"cat":"車立","val":"6車立","lift":0.52,"rate":0.052,"sup":572},{"cat":"脚質構成","val":"逃0・両6・追1 (7車の一本棒)","lift":0.53,"rate":0.053,"sup":131},{"cat":"府県×枠","val":"宮崎が5番","lift":0.29,"rate":0.029,"sup":68}]};
+
+// レースの脚質構成 {逃,両,追}
+function occKousei(entries){
+  const c={'逃':0,'両':0,'追':0};
+  (entries||[]).forEach(e=>{if(e&&e.kyaku&&c[e.kyaku]!=null)c[e.kyaku]++;});
+  return c;
+}
+// 単一述語を1レースに評価
+function occPredMatch(p,race){
+  const ents=race.entries||[];
+  const car=(sb)=>ents.find(e=>Number(e.syaban)===Number(sb));
+  switch(p.t){
+    case 'name_kanji':{const e=car(p.syaban);return !!(e&&(e.name||'').includes(p.kanji));}
+    case 'kyaku':{const e=car(p.syaban);return !!(e&&e.kyaku===p.kyaku);}
+    case 'pref':{const e=car(p.syaban);return !!(e&&e.prefecture===p.pref);}
+    case 'racer':{const e=car(p.syaban);return !!(e&&(e.name||'')===p.name);}
+    case 'racer_present':return ents.some(e=>(e.name||'')===p.name);
+    case 'regno_last':{const e=car(p.syaban);return String((e&&e.regNo)||'').slice(-1)===String(p.digit);}
+    case 'venue':return race.venue===p.venue;
+    case 'grade':return (race.grade||'')===p.grade;
+    case 'rno':return Number(race.raceNo)===Number(p.rno);
+    case 'rc':return Number(race.racerCount||ents.length)===Number(p.rc);
+    case 'kousei':{const k=occKousei(ents);const rc=Number(race.racerCount||ents.length);return k['逃']===p.nige&&k['両']===p.ryo&&k['追']===p.oi&&rc===p.rc;}
+    case 'month':{const m=parseInt(String(race.date||'').split('-')[1],10);return m===p.month;}
+    case 'jun':{const dd=parseInt(String(race.date||'').split('-')[2],10);const j=dd<=10?'上':(dd<=20?'中':'下');return j===p.jun;}
+    case 'dom_div':{const dd=parseInt(String(race.date||'').split('-')[2],10);return dd>0&&dd%p.div===0;}
+    default:return false;
+  }
+}
+// 荒れ複合サイン(全述語AND)発火?
+function occRoughFires(sign,race){return (sign.preds||[]).every(p=>occPredMatch(p,race));}
+// 連動サイン発火? (アンカー選手が定位置/出走)
+function riderLinkFires(sign,race){
+  const ents=race.entries||[];
+  if(sign.anchorSyaban!=null){const e=ents.find(x=>Number(x.syaban)===Number(sign.anchorSyaban));return !!(e&&(e.name||'')===sign.name);}
+  return ents.some(e=>(e.name||'')===sign.name);
+}
+// 結果3着内 (未確定は[])
+function raceTop3(race){return [race.result1,race.result2,race.result3].filter(v=>v!=null).map(Number);}
+// 1レースに発火する全オカルトサイン
+function occultFirings(race){
+  return {rough:OCCULT_ROUGH_SIGNS.filter(s=>occRoughFires(s,race)),
+          links:RIDER_LINK_SIGNS.filter(s=>riderLinkFires(s,race))};
+}
+
+/* ====================================================================
    DB ハイブリッドストレージ (boat-sign と同じ設計)
    サーバーあり: SQLite経由 / サーバーなし: IndexedDB
 ==================================================================== */
@@ -3089,8 +3161,9 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
         }
         return{...a,connected};
       });
-      return{...r,alerts:withResult,linked,killed,tickets};
-    }).filter(r=>r.alerts.length>0).sort((a,b)=>(a.venue||'').localeCompare(b.venue)||a.raceNo-b.raceNo);
+      const occ=occultFirings(r);
+      return{...r,alerts:withResult,linked,killed,tickets,occRough:occ.rough,occLinks:occ.links};
+    }).filter(r=>r.alerts.length>0||r.occRough.length>0||r.occLinks.length>0).sort((a,b)=>(a.venue||'').localeCompare(b.venue)||a.raceNo-b.raceNo);
   },[raceResults,signConditions,players,discoveries,today]);
 
   const confirmed=analyzed.flatMap(r=>r.alerts.filter(a=>a.connected!==null));
@@ -3241,6 +3314,8 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
               <span style={{fontWeight:'900',fontSize:'16px'}}>{race.venue}</span>
               <span style={{fontWeight:'800',fontSize:'13px',color:'var(--accent)',background:'var(--bg3)',borderRadius:'6px',padding:'2px 8px'}}>{race.raceNo}R</span>
               {race.grade&&<span className={`grade-cls ${race.grade.startsWith('S')?'s':race.grade.startsWith('A')?'a':'c'}`}>{race.grade}</span>}
+              {race.occRough&&race.occRough.length>0&&<span title={race.occRough.map(s=>s.desc).join(' / ')} style={{fontWeight:'900',fontSize:'11px',color:'#fff',background:'var(--red)',borderRadius:'6px',padding:'2px 7px'}}>🔥荒れ予兆{race.occRough.length>1?`×${race.occRough.length}`:''}</span>}
+              {race.occLinks&&race.occLinks.length>0&&<span title={race.occLinks.map(s=>s.desc).join(' / ')} style={{fontWeight:'900',fontSize:'11px',color:'#fff',background:'var(--blue)',borderRadius:'6px',padding:'2px 7px'}}>🔗連動{race.occLinks.length>1?`×${race.occLinks.length}`:''}</span>}
               {hasResult?(
                 <>
                   <span style={{marginLeft:'auto',fontSize:'12px',color:'var(--text2)'}}>
@@ -3282,6 +3357,21 @@ function TodayRacesScreen({players,raceResults,signConditions,discoveries=[]}){
                 </div>
               );
             })}
+            {((race.occRough&&race.occRough.length>0)||(race.occLinks&&race.occLinks.length>0))&&(
+              <div style={{marginTop:'4px',padding:'8px 10px',borderRadius:'8px',background:'rgba(26,85,136,0.06)',border:'1px dashed rgba(26,85,136,0.45)'}}>
+                {(race.occRough||[]).map((s,k)=>(
+                  <div key={'r'+k} style={{fontSize:'11px',lineHeight:'1.55',color:'var(--text2)',marginBottom:'2px'}}>
+                    <span style={{color:'var(--red)',fontWeight:'800'}}>🔥{s.id}</span> {s.desc} <span>(全DB荒率{Math.round(s.rate*100)}% / 基準比{s.lift.toFixed(1)}倍)</span>
+                  </div>
+                ))}
+                {(race.occLinks||[]).map((s,k)=>(
+                  <div key={'l'+k} style={{fontSize:'11px',lineHeight:'1.55',color:'var(--text2)',marginBottom:'2px'}}>
+                    <span style={{color:'var(--blue)',fontWeight:'800'}}>🔗{s.id}</span> {s.desc} <span>(連動率{Math.round(s.rate*100)}% / 平均3連単¥{(s.meanTp||0).toLocaleString()})</span>
+                  </div>
+                ))}
+                <div style={{fontSize:'10px',color:'var(--text2)',marginTop:'3px'}}>※🔮オカルトタブの全DB照合に基づく予兆サイン</div>
+              </div>
+            )}
             {race.killed&&race.killed.length>0&&(
               <div style={{display:'flex',gap:'6px',alignItems:'center',flexWrap:'wrap',marginTop:'4px',
                 padding:'6px 10px',borderRadius:'8px',background:'rgba(228,68,68,0.06)',border:'1px dashed rgba(228,68,68,0.4)'}}>
@@ -5986,7 +6076,7 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
       <div className="card">
         <div className="card-title">アプリ情報</div>
         <div style={{fontSize:'12px',color:'var(--text2)',lineHeight:'1.8'}}>
-          競輪サイン予想 v2.8<br/>
+          競輪サイン予想 v3.0<br/>
           データソース: KEIRIN.JP<br/>
           サポート: F1/F2/G1/G2/G3, 7車立て・9車立て
         </div>
@@ -5998,6 +6088,271 @@ function SettingsScreen({connected,reload,autoEnabled,setAutoEnabled,runAutoFetc
 /* ====================================================================
    メインApp
 ==================================================================== */
+/* ====================================================================
+   🔮 OccultScreen — オカルトサインの集約画面 (v3.0)
+   荒れ予兆(List A) / 連動(List B) / 共通項 / 本日発火 / 結果照合・回収率
+==================================================================== */
+function occPct(x,d=0){return (x*100).toFixed(d)+'%';}
+function occLiftColor(l){return l>=2.5?'var(--red)':(l>=1.8?'var(--accent)':'var(--text2)');}
+
+// List B 連動サイン用 ワイド回収率 (実オッズをライブ取得; RoiButtonと同じ取得経路)
+function LinkRoiButton({sign,raceResults}){
+  const[roi,setRoi]=useState(null);
+  const[running,setRunning]=useState(false);
+  const calculate=async()=>{
+    setRunning(true);
+    try{
+      const pair=sign.pair.map(Number).sort((a,b)=>a-b);
+      const key=pair.join('-');
+      const dedup=dedupRaces(raceResults);
+      const matched=[];
+      for(const r of dedup){
+        if(!r.result1||!r.entries)continue;
+        if(!riderLinkFires(sign,r))continue;
+        const top3=[r.result1,r.result2,r.result3].filter(Boolean).map(Number);
+        matched.push({race:r,isHit:pair.every(n=>top3.includes(n))});
+      }
+      let totalPayout=0,hitCount=0,fetchedNew=0;
+      const enriched=[]; const venueEncCache={};
+      for(const m of matched){
+        if(!m.isHit){enriched.push(m);continue;}
+        let pay=null;
+        if(m.race.widePayouts&&m.race.widePayouts[key]!=null)pay=m.race.widePayouts[key];
+        else{
+          let rvPrm=m.race.raceRVPrm;
+          if(!rvPrm){
+            const ck=`${m.race.date}|${m.race.venue}`;
+            if(!venueEncCache[ck]){
+              try{
+                const venues=await clientFetchVenues(m.race.date);
+                const v=venues.find(x=>x.name===m.race.venue);
+                if(v&&v.encPrm){
+                  const j=await _proxyFetch({type:'JSJ018',encp:v.encPrm});
+                  const map={};
+                  (j.resultList||[]).forEach(rr=>{const rno=parseInt((rr.rclblRaceNo||'').replace('R',''));if(rno&&(rr.raceRVPrm||rr.raceTanpyoPrm))map[rno]=rr.raceRVPrm||rr.raceTanpyoPrm;});
+                  venueEncCache[ck]=map;
+                }else venueEncCache[ck]={};
+              }catch(e){venueEncCache[ck]={};}
+            }
+            rvPrm=venueEncCache[ck][m.race.raceNo];
+          }
+          if(rvPrm){
+            try{
+              const w=await clientFetchWideForRace(rvPrm);
+              pay=w.widePayouts[key];
+              if(pay!=null||Object.keys(w.widePayouts).length>0){
+                await dbPut('raceResults',{...m.race,widePayouts:w.widePayouts,wideNinki:w.wideNinki,raceRVPrm:rvPrm});fetchedNew++;
+              }
+            }catch(e){}
+          }
+        }
+        if(pay!=null){totalPayout+=pay;hitCount++;}
+        enriched.push({...m,pay});
+      }
+      const totalBets=matched.length*100;
+      setRoi({trials:matched.length,hits:hitCount,totalPayout,totalBets,roi:totalBets>0?(totalPayout/totalBets*100):0,enriched,fetchedNew});
+    }catch(e){alert('検証失敗: '+e.message);}finally{setRunning(false);}
+  };
+  return(
+    <>
+      <button className="btn btn-sm btn-ghost" onClick={calculate} disabled={running} style={{fontSize:'11px',padding:'3px 8px',minHeight:'28px',marginTop:'4px'}}>
+        {running?'⏳ 計算中...':`💰 ワイド${sign.pair[0]}-${sign.pair[1]} 回収率を検証`}
+      </button>
+      {roi&&(
+        <div style={{marginTop:'8px',padding:'9px 11px',background:roi.roi>=100?'rgba(58,122,42,0.07)':'rgba(187,34,0,0.05)',border:`1px solid ${roi.roi>=100?'var(--green)':'var(--red)'}`,borderRadius:'6px',fontSize:'12px'}}>
+          <div style={{display:'flex',gap:'10px',flexWrap:'wrap'}}>
+            <span><strong>該当{roi.trials}回</strong></span>
+            <span>的中<strong style={{color:'var(--green)'}}>{roi.hits}</strong></span>
+            <span>払戻<strong>{roi.totalPayout.toLocaleString()}円</strong></span>
+            <span style={{marginLeft:'auto',fontWeight:'900',fontSize:'15px',color:roi.roi>=100?'var(--green)':'var(--red)'}}>回収率 {roi.roi.toFixed(1)}%</span>
+          </div>
+          {roi.fetchedNew>0&&<div style={{fontSize:'10px',color:'var(--text2)'}}>※ {roi.fetchedNew}件のワイド配当を新規取得</div>}
+          <div style={{fontSize:'10px',color:'var(--text2)',marginTop:'4px'}}>各100円・ワイド{sign.pair[0]}-{sign.pair[1]}固定買い。本命型のため配当は低め。</div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function OccultScreen({raceResults,players}){
+  const today=new Date().toISOString().slice(0,10);
+  const[sub,setSub]=useState('rough');
+  const[openA,setOpenA]=useState(null);
+  const[openB,setOpenB]=useState(null);
+
+  const {aStats,bStats,resolvedN}=useMemo(()=>{
+    const dedup=dedupRaces(raceResults);
+    const resolved=dedup.filter(r=>r.result1!=null&&r.entries&&r.entries.length);
+    const aStats={}; OCCULT_ROUGH_SIGNS.forEach(s=>aStats[s.id]={fire:0,rough:0,ex:[]});
+    const bStats={}; RIDER_LINK_SIGNS.forEach(s=>bStats[s.id]={fire:0,hit:0,ex:[]});
+    resolved.forEach(r=>{
+      const top3=raceTop3(r); const tp=r.trifectaPayout||0; const rough=tp>=30000;
+      OCCULT_ROUGH_SIGNS.forEach(s=>{if(occRoughFires(s,r)){const st=aStats[s.id];st.fire++;if(rough)st.rough++;if(st.ex.length<20)st.ex.push({date:r.date,venue:r.venue,raceNo:r.raceNo,tp,top3,rough});}});
+      RIDER_LINK_SIGNS.forEach(s=>{if(riderLinkFires(s,r)){const st=bStats[s.id];st.fire++;const hit=s.pair.every(n=>top3.includes(n));if(hit)st.hit++;if(st.ex.length<20)st.ex.push({date:r.date,venue:r.venue,raceNo:r.raceNo,tp,top3,hit});}});
+    });
+    return {aStats,bStats,resolvedN:resolved.length};
+  },[raceResults]);
+
+  const todayFire=useMemo(()=>{
+    const tr=dedupRaces(raceResults.filter(r=>r.date===today&&r.entries&&r.entries.length));
+    const items=[];
+    tr.forEach(r=>{const f=occultFirings(r);if(f.rough.length||f.links.length){const top3=raceTop3(r);items.push({race:r,rough:f.rough,links:f.links,top3,resolved:top3.length===3});}});
+    return items.sort((a,b)=>(a.race.venue||'').localeCompare(b.race.venue)||a.race.raceNo-b.race.raceNo);
+  },[raceResults,today]);
+
+  const roughSorted=[...OCCULT_ROUGH_SIGNS].sort((a,b)=>b.lift-a.lift);
+  const linkSorted=[...RIDER_LINK_SIGNS].sort((a,b)=>b.rate-a.rate);
+
+  return(
+    <div style={{padding:'10px 12px 80px'}}>
+      <div className="card" style={{marginBottom:'12px'}}>
+        <div style={{fontSize:'15px',fontWeight:'900',marginBottom:'4px'}}>🔮 オカルト・サイン</div>
+        <div style={{fontSize:'11px',color:'var(--text2)',lineHeight:1.6}}>
+          全レースを裏読み採掘。<b style={{color:'var(--red)'}}>荒れ=3連単30,000円(300倍)以上</b>、基準荒率10.2%。
+          条件が揃った時に「荒れやすい/2車が連動する」オカルトを抽出し、実結果と照合しています。
+        </div>
+      </div>
+
+      <div className="card" style={{marginBottom:'12px',borderColor:todayFire.length?'var(--accent)':'var(--border)'}}>
+        <div className="section-title">📡 本日の発火状況 ({today})</div>
+        {todayFire.length===0
+          ? <div style={{fontSize:'12px',color:'var(--text2)'}}>本日のオカルト発火はありません（出走表が未取得の可能性）。</div>
+          : todayFire.map((it,i)=>(
+            <div key={i} style={{padding:'7px 0',borderTop:i?'1px solid var(--border)':'none'}}>
+              <div style={{fontSize:'12px',fontWeight:'800',marginBottom:'3px'}}>
+                {it.race.venue}{it.race.raceNo}R
+                {it.resolved&&<span style={{marginLeft:'6px',fontSize:'10px',color:'var(--text2)'}}>結果{it.top3.join('-')} / 3連単{(it.race.trifectaPayout||0).toLocaleString()}円</span>}
+              </div>
+              {it.rough.map(s=>(
+                <div key={s.id} style={{fontSize:'11px',marginLeft:'6px'}}>
+                  <span style={{color:'var(--red)',fontWeight:'700'}}>🔥荒れ予兆</span> {s.desc}
+                  <span style={{color:'var(--text2)'}}> (荒率{occPct(s.rate)}/{s.lift}x)</span>
+                  {it.resolved&&((it.race.trifectaPayout||0)>=30000?<span style={{color:'var(--green)',fontWeight:'700'}}> ◎的中</span>:<span style={{color:'var(--text2)'}}> ・不発</span>)}
+                </div>
+              ))}
+              {it.links.map(s=>{
+                const hit=it.resolved&&s.pair.every(n=>it.top3.includes(n));
+                return(
+                  <div key={s.id} style={{fontSize:'11px',marginLeft:'6px'}}>
+                    <span style={{color:'var(--blue)',fontWeight:'700'}}>🔗連動</span> {s.desc}
+                    <span style={{color:'var(--text2)'}}> (連動{occPct(s.rate)})</span>
+                    {it.resolved&&(hit?<span style={{color:'var(--green)',fontWeight:'700'}}> ◎連動</span>:<span style={{color:'var(--text2)'}}> ・不連動</span>)}
+                  </div>
+                );
+              })}
+            </div>
+          ))
+        }
+      </div>
+
+      <div style={{display:'flex',gap:'6px',marginBottom:'10px'}}>
+        {[['rough','🔥荒れ予兆'],['link','🔗連動'],['common','🧬共通項']].map(([k,l])=>(
+          <button key={k} className={`btn btn-sm ${sub===k?'btn-primary':'btn-ghost'}`} style={{flex:1,fontSize:'12px'}} onClick={()=>setSub(k)}>{l}</button>
+        ))}
+      </div>
+
+      {sub==='rough'&&<div>
+        <div style={{fontSize:'11px',color:'var(--text2)',marginBottom:'8px'}}>この複合条件が揃うと荒れやすい（lift=基準10.2%の何倍か）。実績はDB全{resolvedN.toLocaleString()}Rで再照合。OOS=前半/後半の独立検証。</div>
+        {roughSorted.map(s=>{
+          const st=aStats[s.id]||{fire:0,rough:0,ex:[]};
+          const realRate=st.fire?st.rough/st.fire:0;
+          const open=openA===s.id;
+          return(
+            <div key={s.id} className="card" style={{marginBottom:'8px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                <span style={{fontWeight:'800',fontSize:'13px',flex:1}}>{s.desc}</span>
+                <span style={{fontWeight:'900',fontSize:'15px',color:occLiftColor(s.lift)}}>{s.lift}x</span>
+              </div>
+              <div style={{display:'flex',gap:'10px',flexWrap:'wrap',fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+                <span>荒率<b style={{color:'var(--text)'}}>{occPct(s.rate)}</b>({s.r30}/{s.support})</span>
+                <span>OOS {occPct(s.oos[0])}/{occPct(s.oos[1])}</span>
+                <span>平均荒配<b style={{color:'var(--text)'}}>{s.meanTp.toLocaleString()}円</b></span>
+              </div>
+              <div style={{fontSize:'11px',marginTop:'4px',color:st.fire===0?'var(--text2)':(realRate>=OCCULT_BASE_RATE?'var(--green)':'var(--text2)')}}>
+                {st.fire===0?'📊 全DB照合: 該当レースなし（この端末のデータ範囲外）':<>📊 全DB照合: {st.fire}発火 / 荒れ{st.rough} = <b>{occPct(realRate,1)}</b></>}
+              </div>
+              {st.ex.length>0&&<button className="btn btn-sm btn-ghost" style={{fontSize:'11px',marginTop:'4px'}} onClick={()=>setOpenA(open?null:s.id)}>{open?'事例を閉じる':`事例を見る (${st.ex.length})`}</button>}
+              {open&&<div style={{marginTop:'6px',maxHeight:'220px',overflowY:'auto'}}>
+                {st.ex.slice().reverse().map((e,i)=>(
+                  <div key={i} style={{fontSize:'10px',padding:'2px 0',display:'flex',gap:'6px',color:'var(--text2)'}}>
+                    <span style={{minWidth:'72px'}}>{e.date}</span>
+                    <span style={{minWidth:'50px'}}>{e.venue}{e.raceNo}R</span>
+                    <span style={{minWidth:'56px'}}>{e.top3.join('-')}</span>
+                    <span style={{color:e.rough?'var(--red)':'var(--text2)',fontWeight:e.rough?'700':'400'}}>{e.rough?'◎荒':'・堅'} {e.tp.toLocaleString()}円</span>
+                  </div>
+                ))}
+              </div>}
+            </div>
+          );
+        })}
+      </div>}
+
+      {sub==='link'&&<div>
+        <div style={{fontSize:'11px',color:'var(--text2)',marginBottom:'8px'}}>選手アンカー型：この選手が定位置にいると特定2車が3着以内に連動。★=連動率70%超。回収率は実ワイドオッズをライブ取得。</div>
+        {linkSorted.map(s=>{
+          const st=bStats[s.id]||{fire:0,hit:0,ex:[]};
+          const realRate=st.fire?st.hit/st.fire:0;
+          const open=openB===s.id;
+          return(
+            <div key={s.id} className="card" style={{marginBottom:'8px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                <span style={{fontWeight:'800',fontSize:'13px',flex:1}}>{s.rate>=0.7&&'★ '}{s.desc}</span>
+                <span style={{fontWeight:'900',fontSize:'15px',color:s.rate>=0.7?'var(--green)':'var(--accent)'}}>{occPct(s.rate)}</span>
+              </div>
+              <div style={{display:'flex',gap:'10px',flexWrap:'wrap',fontSize:'11px',color:'var(--text2)',marginTop:'4px'}}>
+                <span>連動{s.hits}/{s.support}</span>
+                <span>OOS {occPct(s.oos[0])}/{occPct(s.oos[1])}</span>
+                <span>平均3連単<b style={{color:'var(--text)'}}>{s.meanTp.toLocaleString()}円</b></span>
+                <span>荒率{occPct(s.areRate)}</span>
+              </div>
+              <div style={{fontSize:'11px',marginTop:'4px',color:st.fire===0?'var(--text2)':(realRate>=0.6?'var(--green)':'var(--text2)')}}>{st.fire===0?'📊 全DB照合: 該当レースなし（この端末のデータ範囲外）':<>📊 全DB照合: {st.fire}発火 / 連動{st.hit} = <b>{occPct(realRate,1)}</b></>}</div>
+              <LinkRoiButton sign={s} raceResults={raceResults}/>
+              {st.ex.length>0&&<button className="btn btn-sm btn-ghost" style={{fontSize:'11px',marginTop:'4px'}} onClick={()=>setOpenB(open?null:s.id)}>{open?'事例を閉じる':`事例を見る (${st.ex.length})`}</button>}
+              {open&&<div style={{marginTop:'6px',maxHeight:'220px',overflowY:'auto'}}>
+                {st.ex.slice().reverse().map((e,i)=>(
+                  <div key={i} style={{fontSize:'10px',padding:'2px 0',display:'flex',gap:'6px',color:'var(--text2)'}}>
+                    <span style={{minWidth:'72px'}}>{e.date}</span>
+                    <span style={{minWidth:'50px'}}>{e.venue}{e.raceNo}R</span>
+                    <span style={{minWidth:'56px'}}>{e.top3.join('-')}</span>
+                    <span style={{color:e.hit?'var(--green)':'var(--red)',fontWeight:'700'}}>{e.hit?`◎${s.pair[0]}-${s.pair[1]}連動`:'×不連動'}</span>
+                  </div>
+                ))}
+              </div>}
+            </div>
+          );
+        })}
+      </div>}
+
+      {sub==='common'&&<div>
+        <div style={{fontSize:'11px',color:'var(--text2)',marginBottom:'8px'}}>荒れレースに共通して現れる構造的要素（単一factorのlift, 出現60回以上）。これが「荒れの共通項」。</div>
+        <div className="card" style={{marginBottom:'8px'}}>
+          <div className="section-title" style={{color:'var(--red)'}}>🔥 荒れを呼ぶ共通項</div>
+          {ROUGH_COMMON_FACTORS.raise.map((f,i)=>(
+            <div key={i} style={{display:'flex',gap:'8px',alignItems:'center',padding:'4px 0',borderTop:i?'1px solid var(--border)':'none'}}>
+              <span style={{fontWeight:'900',color:'var(--red)',minWidth:'42px'}}>{f.lift}x</span>
+              <span style={{flex:1,fontSize:'12px'}}><b>{f.val}</b><span style={{color:'var(--text2)',fontSize:'10px'}}> [{f.cat}]</span></span>
+              <span style={{fontSize:'10px',color:'var(--text2)'}}>荒率{occPct(f.rate)}/{f.sup}R</span>
+            </div>
+          ))}
+        </div>
+        <div className="card">
+          <div className="section-title" style={{color:'var(--green)'}}>🛡 堅く収まる共通項</div>
+          {ROUGH_COMMON_FACTORS.clean.map((f,i)=>(
+            <div key={i} style={{display:'flex',gap:'8px',alignItems:'center',padding:'4px 0',borderTop:i?'1px solid var(--border)':'none'}}>
+              <span style={{fontWeight:'900',color:'var(--green)',minWidth:'42px'}}>{f.lift}x</span>
+              <span style={{flex:1,fontSize:'12px'}}><b>{f.val}</b><span style={{color:'var(--text2)',fontSize:'10px'}}> [{f.cat}]</span></span>
+              <span style={{fontSize:'10px',color:'var(--text2)'}}>荒率{occPct(f.rate)}/{f.sup}R</span>
+            </div>
+          ))}
+        </div>
+        <div style={{fontSize:'11px',color:'var(--text2)',marginTop:'10px',lineHeight:1.6}}>
+          <b>まとめ：</b>荒れの正体は「<b style={{color:'var(--red)'}}>9車立で隊列がバラけ、外枠(8・9番)が動く</b>」レース。G1の大舞台も荒れやすい。逆に<b style={{color:'var(--green)'}}>5〜6車立や一本棒</b>の隊列はほぼ堅い。オカルトサイン(荒れ予兆)も、その多くが8・9番に絡む条件＝この共通項の表れ。
+        </div>
+      </div>}
+    </div>
+  );
+}
+
 function App(){
   const[tab,setTab]=useState('today');
   const[players,setPlayers]=useState([]);
@@ -6082,6 +6437,7 @@ function App(){
 
   const tabs=[
     {id:'today',icon:'📋',label:'本日'},
+    {id:'occult',icon:'🔮',label:'オカルト'},
     {id:'tally',icon:'📊',label:'集計'},
     {id:'perf',icon:'📈',label:'成績'},
     {id:'race',icon:'🔬',label:'予想'},
@@ -6095,7 +6451,7 @@ function App(){
   return(
     <div className="app">
       <div className="header">
-        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v2.8</span></h1>
+        <h1>競輪サイン予想 <span style={{fontSize:'10px',color:'var(--text2)',fontWeight:'400'}}>v3.0</span></h1>
         <span className="sub">{connected?'🟢':'⚪️'} {players.length}名 / {raceResults.length}R</span>
       </div>
       {autoFetchStatus&&(
@@ -6114,6 +6470,7 @@ function App(){
       )}
       <div className="content">
         {tab==='today'&&<TodayRacesScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
+        {tab==='occult'&&<OccultScreen raceResults={raceResults} players={players}/>}
         {tab==='tally'&&<TallyScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries}/>}
         {tab==='perf'&&<PerformanceScreen raceResults={raceResults} signConditions={signConditions} discoveries={discoveries} reload={reload}/>}
         {tab==='race'&&<TodayScreen players={players} raceResults={raceResults} signConditions={signConditions} discoveries={discoveries} reload={reload}/>}
